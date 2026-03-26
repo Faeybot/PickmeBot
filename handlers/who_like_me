@@ -25,8 +25,9 @@ async def view_who_liked_me(callback: types.CallbackQuery, db: DatabaseService, 
         text_content += "<i>Belum ada yang menyukaimu. Terus posting foto terbaikmu di Feed!</i>"
     else:
         for i, person in enumerate(interactors, 1):
-            # Cek kasta untuk sensor nama (VIP/VIP+ bisa melihat nama lengkap)
-            is_locked = not (current_user.is_vip or current_user.is_vip_plus)
+            # KUNCI EKSKLUSIF: Hanya VIP+ yang bisa melihat profil orang yang nge-like!
+            is_locked = not current_user.is_vip_plus 
+            
             name = f"{person.full_name[:3]}***" if is_locked else person.full_name
             age = person.age
             city = html.escape(person.location_name) if person.location_name else "Lokasi Tidak Diketahui"
@@ -35,7 +36,7 @@ async def view_who_liked_me(callback: types.CallbackQuery, db: DatabaseService, 
             url_lock = f"https://t.me/{bot_username}?start=pricing"
             
             if is_locked:
-                text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href='{url_lock}'>[🔒 Upgrade VIP]</a>\n\n"
+                text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href='{url_lock}'>[🔒 Upgrade VIP+]</a>\n\n"
             else:
                 text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href='{url}'>[Lihat Profil]</a>\n\n"
 
