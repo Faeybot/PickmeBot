@@ -28,8 +28,8 @@ def get_list_ids(key: str):
 
 # 1. ID Publik, Log & Grup Approval
 FEED_CHANNEL_ID = get_int_id("FEED_CHANNEL_ID")
-FINANCE_CHANNEL_ID = get_int_id("FINANCE_CHANNEL_ID") # Buku Besar (Log)
-FINANCE_GROUP_ID = get_int_id("FINANCE_GROUP_ID")     # Tempat Klik Approve
+FINANCE_CHANNEL_ID = get_int_id("FINANCE_CHANNEL_ID") 
+FINANCE_GROUP_ID = get_int_id("FINANCE_GROUP_ID")     
 
 # 2. Hak Akses
 OWNER_ID = get_int_id("OWNER_ID")
@@ -57,19 +57,15 @@ async def admin_confirm_wd(callback: types.CallbackQuery, db: DatabaseService, b
     trx_id = parts[3]
 
     async with db.session_factory() as session:
-        # Langsung update status di database jika ada tabel WithdrawRequest
-        # Jika tidak ada, kita asumsikan poin sudah dipotong di awal (withdraw.py)
         user = await session.get(User, user_id)
         if user:
             user.has_withdrawn_before = True
         await session.commit()
 
-    # Update UI di Grup Finance (Tempat Approve)
     old_text = callback.message.text
     new_text = f"{old_text}\n\n✅ <b>LUNAS (DITRANSFER)</b>\nOleh: {callback.from_user.first_name}"
     await callback.message.edit_text(new_text, reply_markup=None, parse_mode="HTML")
 
-    # Kirim ke Buku Besar (Channel Finance)
     if FINANCE_CHANNEL_ID:
         log_text = (
             f"🧾 <b>LAPORAN KAS KELUAR (WD)</b>\n"
@@ -80,7 +76,6 @@ async def admin_confirm_wd(callback: types.CallbackQuery, db: DatabaseService, b
         try: await bot.send_message(FINANCE_CHANNEL_ID, log_text, parse_mode="HTML")
         except: pass
 
-    # Notif ke User
     try:
         await bot.send_message(user_id, "🎊 <b>WITHDRAW BERHASIL!</b>\nDana telah dikirim ke rekening/e-wallet Anda. Silakan cek saldo!", parse_mode="HTML")
     except: pass
@@ -94,7 +89,6 @@ async def admin_approve_trial_jackpot(callback: types.CallbackQuery, db: Databas
 
     parts = callback.data.split("_")
     user_id = int(parts[2])
-    # item_type diabaikan karena semua jadi VIP+
     
     expiry_date = datetime.now() + timedelta(days=7)
     
@@ -102,13 +96,11 @@ async def admin_approve_trial_jackpot(callback: types.CallbackQuery, db: Databas
         user = await session.get(User, user_id)
         if not user: return await callback.answer("User tidak ditemukan")
 
-        # LOGIKA JACKPOT: Apapun yang diminta, kasih VIP+ (Bait Premium)
         user.is_vip_plus = True
         user.is_vip = False
-        user.is_premium = False # JANGAN dikasi Talent agar tidak bisa WD (Celah Keamanan)
-        user.vip_expiry_at = expiry_date # Pastikan kolom ini ada di DB
+        user.is_premium = False 
+        user.vip_expires_at = expiry_date # FIX: Disesuaikan dengan nama kolom di database.py
         
-        # Berikan Kuota Sultan agar user betah
         user.daily_feed_text_quota = 10
         user.daily_feed_photo_quota = 5
         user.daily_message_quota = 10
@@ -116,11 +108,9 @@ async def admin_approve_trial_jackpot(callback: types.CallbackQuery, db: Databas
         
         await session.commit()
 
-    # Update UI Grup Admin
     old_text = callback.message.text
     await callback.message.edit_text(f"{old_text}\n\n✅ <b>VIP+ AKTIF (7 HARI)</b>\nApproved by: {callback.from_user.first_name}", reply_markup=None)
 
-    # Kirim ke Buku Besar (Channel Finance)
     if FINANCE_CHANNEL_ID:
         log_trial = (
             f"🎁 <b>LOG TRIAL PREMIUM</b>\n"
@@ -131,14 +121,12 @@ async def admin_approve_trial_jackpot(callback: types.CallbackQuery, db: Databas
         try: await bot.send_message(FINANCE_CHANNEL_ID, log_trial, parse_mode="HTML")
         except: pass
 
-    # Notif ke User (Pesan Sesuai Instruksi Kamu)
     msg_user = (
         "🎉 <b>SELAMAT! PENGAJUAN DISETUJUI</b>\n\n"
         "Akunmu telah ditingkatkan menjadi <b>VIP+</b> selama <b>7 hari masa trial</b>.\n\n"
         "Nikmati fitur bongkar anonim, chat sepuasnya, dan prioritas discovery sekarang juga!"
     )
-    try:
-        await bot.send_message(user_id, msg_user, parse_mode="HTML")
+    try: await bot.send_message(user_id, msg_user, parse_mode="HTML")
     except: pass
     await callback.answer("Trial VIP+ Aktif!")
 
@@ -168,11 +156,9 @@ async def admin_approve_feed(callback: types.CallbackQuery, db: DatabaseService,
     user = await db.get_user(target_id)
     bot_info = await bot.get_me()
 
-    # Ambil Caption Asli
     raw_caption = callback.message.caption or ""
     original_caption = raw_caption.split("Caption:")[1].strip() if "Caption:" in raw_caption else ""
     
-    # Format Posting Channel
     name_header = "🎭 <b>ANONIM</b>" if is_anon else f"👤 <b>{user.full_name.upper()}</b>"
     link_profile = f"https://t.me/{bot_info.username}?start=view_{user.id}"
     
@@ -240,7 +226,5 @@ async def admin_view_profile(callback: types.CallbackQuery, db: DatabaseService)
 
 @router.callback_query(F.data == "close_admin_view")
 async def close_view(callback: types.CallbackQuery):
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
+    try: await callback.message.delete()
+    except Exception: pass
