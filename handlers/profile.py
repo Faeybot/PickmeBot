@@ -184,8 +184,17 @@ async def handle_manual_city_profile(callback: types.CallbackQuery, db: Database
         try: await bot.delete_message(chat_id=callback.message.chat.id, message_id=data.get('gps_msg_id'))
         except: pass
         
+        # FIX: Hapus Keyboard GPS yang nyangkut saat user milih kota via tombol
+        try:
+            from aiogram.types import ReplyKeyboardRemove
+            temp_msg = await callback.message.answer("🔄", reply_markup=ReplyKeyboardRemove())
+            await temp_msg.delete()
+        except: pass
+        
+        await state.clear() # Selesaikan State
+        
         await callback.answer(f"✅ Lokasi diperbarui ke {city_info['name']}!", show_alert=True)
-        # NATIVE CALL (Bebas Mock Object)
+        # NATIVE CALL
         await render_profile_ui(bot, callback.message.chat.id, callback.from_user.id, db, state)
 
 @router.message(F.location, EditProfile.waiting_for_location)
