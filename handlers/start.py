@@ -203,9 +203,25 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
     user_id = message.from_user.id
     chat_id = message.chat.id
     
+    # FIX 1: Bersihkan state FSM agar sistem tidak menunggu input (misal: lokasi/foto)
+    if state: await state.clear()
+    
     # 1. Hapus teks "⬅️ Kembali"
     try: await message.delete()
     except: pass
+    
+    # FIX 2: Trik Sapu Bersih Keyboard Bawah (GPS) yang nyangkut
+    try:
+        from utils.ui_manager import UIManager
+        global_nav = UIManager.get_global_nav_keyboard()
+        # Kirim pesan bawa keyboard default, lalu hapus secepat kilat
+        temp_msg = await bot.send_message(chat_id, "🔄", reply_markup=global_nav)
+        await bot.delete_message(chat_id, temp_msg.message_id)
+    except:
+        # Jaring pengaman jika terjadi error import
+        from aiogram.types import ReplyKeyboardRemove
+        temp_msg = await bot.send_message(chat_id, "🔄", reply_markup=ReplyKeyboardRemove())
+        await bot.delete_message(chat_id, temp_msg.message_id)
     
     # 2. Ambil halaman sebelumnya dari stack di DB
     previous_menu = await db.pop_nav(user_id)
