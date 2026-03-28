@@ -82,15 +82,19 @@ async def render_dashboard_ui(bot: Bot, chat_id: int, user_id: int, db: Database
                 try: await bot.delete_message(chat_id=chat_id, message_id=anchor_id)
                 except: pass
                 
-            # Kirim keyboard navigasi bawah statis & Foto Dashboard
+            # Kirim keyboard navigasi bawah statis
             global_nav = UIManager.get_global_nav_keyboard()
             
-            # Telegram tidak mengizinkan ReplyKeyboard dan InlineKeyboard di 1 pesan yg sama.
-            # Jadi kita attach ReplyKeyboard ke pesan loading sejenak.
-            nav_msg = await bot.send_message(chat_id, "⚙️ Memuat sistem...", reply_markup=global_nav)
-            await bot.delete_message(chat_id, nav_msg.message_id)
+            # FIX: JANGAN DIHAPUS PESANNYA! Kita ubah teksnya jadi lebih elegan.
+            # Pesan ini bertugas sebagai "Jangkar" untuk menahan tombol navigasi bawah agar tidak hilang.
+            await bot.send_message(
+                chat_id, 
+                "🟢 <b>Sistem Navigasi Aktif</b>\n<i>Gunakan tombol di bawah layar untuk kembali ke menu sebelumnya.</i>", 
+                reply_markup=global_nav, 
+                parse_mode="HTML"
+            )
             
-            # Kirim Anchor Utama
+            # Kirim Anchor Utama (Foto Dashboard)
             sent_message = await bot.send_photo(
                 chat_id=chat_id, photo=BANNER_PHOTO_ID, 
                 caption=dashboard_text, reply_markup=inline_kb, parse_mode="HTML"
