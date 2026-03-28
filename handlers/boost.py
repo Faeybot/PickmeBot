@@ -46,11 +46,9 @@ async def execute_repost_logic(bot: Bot, user_id: int, count: int, interval_hour
 # 1. CORE UI RENDERER: BOOST
 # ==========================================
 async def render_boost_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseService, callback_id: str = None):
-    """ Fungsi terpusat untuk menampilkan UI Boost """
     user = await db.get_user(user_id)
     if not user: return False
 
-    # Tambahkan ke history navigasi
     await db.push_nav(user_id, "boost")
 
     total_boost = user.paid_boost_balance + user.weekly_free_boost
@@ -67,12 +65,12 @@ async def render_boost_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseServ
         f"💳 Saldo Tiket Anda: <b>{total_boost} Tiket</b>"
     )
 
+    # ❌ TOMBOL BACK/KEMBALI DIHAPUS DARI SINI
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Pakai 1 Tiket (3x Post)", callback_data="boost_plan_1")],
         [InlineKeyboardButton(text="🚀 Pakai 3 Tiket (6x Post)", callback_data="boost_plan_3")],
         [InlineKeyboardButton(text="🔥 Pakai 5 Tiket (12x Post)", callback_data="boost_plan_5")],
-        [InlineKeyboardButton(text="🛒 BELI TIKET BOOST", callback_data="menu_pricing")],
-        [InlineKeyboardButton(text="🔙 KEMBALI KE FEED", callback_data="menu_feed")]
+        [InlineKeyboardButton(text="🛒 BELI TIKET BOOST", callback_data="menu_pricing")]
     ])
 
     media = InputMediaPhoto(media=BANNER_PHOTO_ID, caption=text, parse_mode="HTML")
@@ -142,22 +140,17 @@ async def process_boost_plan(callback: types.CallbackQuery, db: DatabaseService,
         user.last_boost_date = today
         await session.commit()
 
-    kb_success = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 KEMBALI KE FEED", callback_data="menu_feed")]
-    ])
-    
     success_text = (
         f"✅ <b>BOOST BERHASIL DIAKTIFKAN!</b>\n"
         f"<code>{'—' * 20}</code>\n"
-        f"Profil Anda akan disundul ke Channel sebanyak <b>{repost_count}x</b> secara otomatis.\n"
-        f"Bot akan menangani ini di latar belakang. Anda bisa menutup menu ini."
+        f"Profil Anda akan disundul ke Channel sebanyak <b>{repost_count}x</b> secara otomatis.\n\n"
+        f"<i>Bot akan menangani ini di latar belakang. Silakan gunakan navigasi di bawah untuk melanjutkan.</i>"
     )
     
-    # Perbaikan: Menggunakan edit_caption karena pesan jangkar kita adalah foto
+    # ❌ TOMBOL BACK/KEMBALI DIHAPUS, reply_markup diset ke None
     try:
-        await callback.message.edit_caption(caption=success_text, reply_markup=kb_success, parse_mode="HTML")
+        await callback.message.edit_caption(caption=success_text, reply_markup=None, parse_mode="HTML")
     except Exception:
-        # Fallback aman jika gagal
         pass
     
     asyncio.create_task(execute_repost_logic(bot, user_id, repost_count, interval, label, db))
