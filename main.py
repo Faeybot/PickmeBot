@@ -20,7 +20,7 @@ from services.notification import NotificationService
 # --- 2. IMPORT HANDLERS ---
 from handlers import (
     admin, start, feed, discovery, profile, 
-    pricing, boost, registration, status, preview
+    pricing, boost, registration, status, preview,
     withdraw, chat, inbox, unmask, notification as notifications_handler,
     referrals, who_like_me, match
 )
