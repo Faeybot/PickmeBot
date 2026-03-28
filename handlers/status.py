@@ -19,7 +19,7 @@ async def render_status_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseSer
     await db.push_nav(user_id, "status")
 
     # --- 1. LOGIKA KASTA & STATUS ---
-    status_akun = "🎭 TALENT (PREMIUM)" if user.is_premium else "👤 FREE USER"
+    status_akun = "🎭 PREMIUM VERIFIED" if user.is_premium else "👤 FREE USER"
     
     if user.is_vip_plus:
         status_sub = "💎 VIP+"
