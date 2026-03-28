@@ -37,6 +37,15 @@ class NotificationService:
     async def trigger_new_message(self, target_id: int, sender_id: int, sender_name: str, is_reply: bool = False):
         await self._silent_log(target_id, "CHAT", sender_id, f"Pesan dari {sender_name}")
         
+        # CEK POSISI TARGET (SILENT NOTIF LOGIC)
+        target = await self.db.get_user(target_id)
+        if target and target.nav_stack and target.nav_stack[-1] == f"chat_room_{sender_id}":
+            return # Target sedang di dalam room chat dengan pengirim, batalkan pop-up!
+        if target and target.nav_stack and target.nav_stack[-1] == "inbox":
+            return # Target sedang melihat list inbox, batalkan pop-up agar UI tidak rusak!
+            
+        unreads = await self.db.get_all_unread_counts(target_id)
+        # ... (Lanjutkan kode pengiriman pop-up seperti biasa) ...
         unreads = await self.db.get_all_unread_counts(target_id)
         count_n = unreads.get('inbox', 0)
         
