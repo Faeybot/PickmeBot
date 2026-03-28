@@ -208,7 +208,17 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
     elif previous_menu == "boost":
         from handlers.boost import render_boost_ui
         await render_boost_ui(bot, chat_id, user_id, db)    
-    
+    elif previous_menu == "discovery":
+        from handlers.discovery import render_discovery_ui
+        await render_discovery_ui(bot, chat_id, user_id, db, state)
+    elif previous_menu == "match":
+        from handlers.match import render_match_ui
+        await render_match_ui(bot, chat_id, user_id, db)
+    elif previous_menu == "who_like_me":
+        from handlers.who_like_me import render_who_like_me_ui
+        await render_who_like_me_ui(bot, chat_id, user_id, db)
+
+
     
     else:
         # Fallback safety jika menu asal tidak terbaca, kembali ke Dashboard
