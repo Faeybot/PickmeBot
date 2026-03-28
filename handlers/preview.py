@@ -12,6 +12,12 @@ router = Router()
 
 BANNER_PHOTO_ID = os.getenv("BANNER_PHOTO_ID", "AgACAgUAAxkBAAIKUmm-3V96dh0wXlEwKgR9cZYxQJ7IAAJWEWsb5Sz5VRdAhJBTFWieAQADAgADeAADOgQ")
 
+# FIX 1: Pindahkan Dictionary ke sini agar tidak terjadi Circular Import dengan start.py
+INTEREST_LABELS = {
+    "int_adult": "🔞 Adult Content", "int_flirt": "🔥 Flirt & Dirty Talk", "int_rel": "❤️ Relationship",
+    "int_net": "🤝 Networking", "int_game": "🎮 Gaming", "int_travel": "✈️ Traveling", "int_coffee": "☕ Coffee & Chill"
+}
+
 # ==========================================
 # 1. CORE UI RENDERER: PROFILE PREVIEW
 # ==========================================
@@ -20,16 +26,19 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
     target = await db.get_user(target_id)
     notif_service = NotificationService(bot, db)
     
-    # Simpan ke tumpukan navigasi
     await db.push_nav(viewer_id, f"preview_{target_id}_{context_source}")
 
     if not target:
-        try: await bot.send_message(chat_id, "❌ Profil tidak ditemukan atau user telah menghapus akunnya.")
+        try: 
+            err = await bot.send_message(chat_id, "❌ Profil tidak ditemukan atau user telah menghapus akunnya.")
+            import asyncio; await asyncio.sleep(3); await err.delete()
         except: pass
         return False
         
     if viewer_id == target_id:
-        try: await bot.send_message(chat_id, "👋 Ini adalah link profil kamu sendiri. Gunakan tombol 'Profil Saya' di Dashboard.")
+        try: 
+            err = await bot.send_message(chat_id, "👋 Ini adalah link profil kamu sendiri. Gunakan tombol 'Profil Saya' di Dashboard.")
+            import asyncio; await asyncio.sleep(3); await err.delete()
         except: pass
         return False
 
@@ -59,7 +68,6 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
             quota_unmask = getattr(viewer, 'daily_unmask_quota', 0)
             if quota_unmask is None: quota_unmask = 0
             
-            # Reset kuota harian jika belum ada
             if quota_unmask <= 0:
                 async with db.session_factory() as session:
                     v_db = await session.get(User, viewer_id)
@@ -69,7 +77,9 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
 
             success = await db.use_unmask_anon_quota(viewer_id)
             if not success:
-                try: await bot.send_message(chat_id, "❌ Kuota Harian 'Bongkar Anonim' kamu sudah habis! Tunggu reset besok.")
+                try: 
+                    err = await bot.send_message(chat_id, "❌ Kuota Harian 'Bongkar Anonim' kamu sudah habis! Tunggu reset besok.")
+                    import asyncio; await asyncio.sleep(3); await err.delete()
                 except: pass
                 return False
             
@@ -102,7 +112,9 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
             if is_new_view:
                 success = await db.use_unmask_quota(viewer_id) 
                 if not success:
-                    try: await bot.send_message(chat_id, "❌ Kuota Harian 'Buka Profil' kamu sudah habis! Tunggu reset besok.")
+                    try: 
+                        err = await bot.send_message(chat_id, "❌ Kuota Harian 'Buka Profil' kamu sudah habis! Tunggu reset besok.")
+                        import asyncio; await asyncio.sleep(3); await err.delete()
                     except: pass
                     return False
                 
@@ -128,7 +140,9 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
     elif context_source in ["match", "unmask", "inbox"]:
         pass 
     else:
-        try: await bot.send_message(chat_id, "❌ Akses tidak valid.")
+        try: 
+            err = await bot.send_message(chat_id, "❌ Akses tidak valid.")
+            import asyncio; await asyncio.sleep(3); await err.delete()
         except: pass
         return False
 
@@ -137,8 +151,9 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
     # ==========================================
     target_kasta = "💎 VIP+" if target.is_vip_plus else "🌟 VIP" if target.is_vip else "🎭 PREMIUM" if target.is_premium else "👤 FREE"
     
-    from handlers.start import get_readable_interests 
-    minat = get_readable_interests(target.interests) if hasattr(target, 'interests') else "-"
+    # FIX: Render minat menggunakan dictionary lokal
+    minat_list = [INTEREST_LABELS.get(i.strip(), i.strip()) for i in (target.interests or "").split(",")]
+    minat = ", ".join(minat_list) if target.interests else "-"
 
     target_name = html.escape(target.full_name) if target.full_name else "Anonim"
     target_loc = html.escape(target.location_name) if target.location_name else "-"
@@ -169,7 +184,6 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
 
     kb_buttons = []
     
-    # FIX: Semua awalan callback chat diubah menjadi "chat_" agar terhubung ke chat.py
     if is_unmasked_anon:
         kb_buttons.append([InlineKeyboardButton(text="✍️ KIRIM PESAN", callback_data=f"chat_{target_id}_unmask")])
     elif context_source == "unmask":
@@ -189,15 +203,17 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
         else:
             kb_buttons.append([InlineKeyboardButton(text="💎 UPGRADE UNTUK CHAT", callback_data="menu_pricing")])
             
-
     media = InputMediaPhoto(media=target.photo_id, caption=text_full, parse_mode="HTML")
     anchor_id = viewer.anchor_msg_id
     
-    # SPA UPDATE (Anti Deep Link Crash)
+    # FIX SPA: Jika gagal edit, JANGAN diam saja. Kirim ulang anchor baru!
     try: 
         await bot.edit_message_media(chat_id=chat_id, message_id=anchor_id, media=media, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons))
     except Exception: 
-        pass
+        try:
+            sent = await bot.send_photo(chat_id=chat_id, photo=target.photo_id, caption=text_full, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons), parse_mode="HTML")
+            await db.update_anchor_msg(viewer_id, sent.message_id)
+        except: pass
     
     return True
 
@@ -236,7 +252,6 @@ async def render_locked_anon_ui(bot: Bot, chat_id: int, target: User, viewer: Us
 # 3. GATEWAY HANDLER (Dari Callback & Deep Link)
 # ==========================================
 async def process_profile_preview(message_or_callback: types.Message | types.CallbackQuery, bot: Bot, db: DatabaseService, viewer_id: int, target_id: int, context_source: str):
-    """Fungsi pembungkus agar bisa dipanggil dari CallbackQuery atau deep link Message"""
     chat_id = message_or_callback.chat.id if isinstance(message_or_callback, types.Message) else message_or_callback.message.chat.id
     await render_preview_ui(bot, chat_id, viewer_id, target_id, context_source, db)
 
