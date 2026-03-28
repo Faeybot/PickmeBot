@@ -217,7 +217,16 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
     elif previous_menu == "who_like_me":
         from handlers.who_like_me import render_who_like_me_ui
         await render_who_like_me_ui(bot, chat_id, user_id, db)
-
+    elif previous_menu == "notifications":
+        from handlers.notification import render_notification_menu_ui
+        await render_notification_menu_ui(bot, chat_id, user_id, db)
+    elif previous_menu and previous_menu.startswith("notif_list_"):
+        # Mensimulasikan klik callback pada list yang spesifik
+        from handlers.notification import view_unified_list
+        from collections import namedtuple
+        CallbackMock = namedtuple('CallbackQuery', ['data', 'from_user', 'message', 'answer'])
+        mock = CallbackMock(data=previous_menu, from_user=message.from_user, message=types.Message(message_id=(await db.get_user(user_id)).anchor_msg_id, date=message.date, chat=message.chat), answer=lambda *a,**kw: asyncio.sleep(0))
+        await view_unified_list(mock, db, bot)
 
     
     else:
