@@ -135,6 +135,7 @@ class ChatSession(Base):
     last_message = Column(Text, nullable=True) 
     last_updated = Column(BigInteger, default=0) 
     expires_at = Column(BigInteger) 
+    origin = Column(String, default="public") # Tambahkan baris ini
 
 # ==========================================
 # 2. DATABASE SERVICE (EKSEKUTOR QUERY)
@@ -158,6 +159,7 @@ class DatabaseService:
                     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS channel_msg_ids JSONB DEFAULT '[]'::jsonb;",
                     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS last_message TEXT;",
                     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS last_updated BIGINT DEFAULT 0;",
+                    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS origin VARCHAR DEFAULT 'public';", # Update table here
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS anchor_msg_id BIGINT;",
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS nav_stack JSONB DEFAULT '[\"dashboard\"]'::jsonb;",
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_talent BOOLEAN DEFAULT FALSE;",
@@ -329,7 +331,7 @@ class DatabaseService:
             res = await session.execute(select(ChatSession).where(( (ChatSession.user_id == user_id) & (ChatSession.target_id == target_id) ) | ( (ChatSession.user_id == target_id) & (ChatSession.target_id == user_id) )))
             return res.scalar_one_or_none()
 
-    async def upsert_chat_session(self, user_id: int, target_id: int, expires_at: int, thread_id: int = None, last_message: str = None, new_channel_msg_id: int = None):
+    async def upsert_chat_session(self, user_id: int, target_id: int, expires_at: int, thread_id: int = None, last_message: str = None, new_channel_msg_id: int = None, origin: str = None):
         now_ts = int(datetime.datetime.now().timestamp())
         async with self.session_factory() as session:
             res = await session.execute(select(ChatSession).where(( (ChatSession.user_id == user_id) & (ChatSession.target_id == target_id) ) | ( (ChatSession.user_id == target_id) & (ChatSession.target_id == user_id) )))
@@ -340,6 +342,7 @@ class DatabaseService:
                 session_data.last_updated = now_ts
                 if thread_id is not None: session_data.thread_id = thread_id
                 if last_message is not None: session_data.last_message = last_message
+                if origin: session_data.origin = origin # Update origin baru
                 
                 # Append channel msg ID jika ada pesan baru
                 if new_channel_msg_id:
@@ -350,7 +353,7 @@ class DatabaseService:
                 initial_msgs = [new_channel_msg_id] if new_channel_msg_id else []
                 session.add(ChatSession(
                     user_id=user_id, target_id=target_id, expires_at=expires_at,
-                    thread_id=thread_id, channel_msg_ids=initial_msgs, last_message=last_message, last_updated=now_ts
+                    thread_id=thread_id, channel_msg_ids=initial_msgs, last_message=last_message, last_updated=now_ts, origin=origin or "public"
                 ))
             await session.commit()
 
