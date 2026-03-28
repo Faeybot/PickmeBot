@@ -12,11 +12,13 @@ router = Router()
 BANNER_PHOTO_ID = os.getenv("BANNER_PHOTO_ID", "AgACAgUAAxkBAAIKUmm-3V96dh0wXlEwKgR9cZYxQJ7IAAJWEWsb5Sz5VRdAhJBTFWieAQADAgADeAADOgQ")
 
 # ==========================================
-# 1. MENU UTAMA NOTIFIKASI (Pusat Komando)
+# 0. CORE UI RENDERER: NOTIFICATIONS
 # ==========================================
-@router.callback_query(F.data == "menu_notifications")
-async def show_notification_menu(callback: types.CallbackQuery, db: DatabaseService):
-    user_id = callback.from_user.id
+async def render_notification_menu_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseService, callback_id: str = None):
+    user = await db.get_user(user_id)
+    if not user: return False
+
+    await db.push_nav(user_id, "notifications")
     unreads = await db.get_all_unread_counts(user_id)
 
     text = (
@@ -25,27 +27,48 @@ async def show_notification_menu(callback: types.CallbackQuery, db: DatabaseServ
         "<i>Periksa interaksi barumu. Balas pesan Sultan atau Inbox untuk mendapatkan Bonus Poin!</i>"
     )
 
-    # TOMBOL "LIKE" SUDAH DIHAPUS DARI SINI
+    # ❌ TOMBOL KEMBALI/DASHBOARD DIHAPUS
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🔓 SIAPA UNMASK SAYA ({unreads.get('unmask', 0)})", callback_data="notif_list_unmask")],
         [InlineKeyboardButton(text=f"📥 INBOX PESAN ({unreads.get('inbox', 0)})", callback_data="notif_list_inbox")],
-        [InlineKeyboardButton(text=f"🔥 MATCH / CRUSH ({unreads.get('match', 0)})", callback_data="notif_list_match")],
-        [InlineKeyboardButton(text=f"👀 SIAPA MELIHAT PROFIL ({unreads.get('view', 0)})", callback_data="notif_list_view")],
-        [InlineKeyboardButton(text="🏠 KEMBALI KE DASHBOARD", callback_data="back_to_dashboard")]
+        [InlineKeyboardButton(text=f"👀 SIAPA MELIHAT PROFIL ({unreads.get('view', 0)})", callback_data="notif_list_view")]
     ])
     
     media = InputMediaPhoto(media=BANNER_PHOTO_ID, caption=text, parse_mode="HTML")
-    try: 
-        await callback.message.edit_media(media=media, reply_markup=kb)
-    except Exception:
-        try: await callback.message.delete()
+    anchor_id = user.anchor_msg_id
+    success_edit = False
+
+    if anchor_id:
+        try:
+            await bot.edit_message_media(chat_id=chat_id, message_id=anchor_id, media=media, reply_markup=kb)
+            success_edit = True
+        except Exception:
+            pass
+
+    if not success_edit:
+        try:
+            if anchor_id:
+                try: await bot.delete_message(chat_id=chat_id, message_id=anchor_id)
+                except: pass
+            sent_message = await bot.send_photo(chat_id=chat_id, photo=BANNER_PHOTO_ID, caption=text, reply_markup=kb, parse_mode="HTML")
+            await db.update_anchor_msg(user_id, sent_message.message_id)
+        except Exception as e:
+            logging.error(f"Gagal mengirim ulang Notification UI: {e}")
+
+    if callback_id:
+        try: await bot.answer_callback_query(callback_id)
         except: pass
-        await callback.message.answer_photo(photo=BANNER_PHOTO_ID, caption=text, reply_markup=kb, parse_mode="HTML")
-    
-    await callback.answer()
+    return True
 
 # ==========================================
-# 2. HANDLER LIST (Universal, Tanpa "Like")
+# 1. MENU UTAMA NOTIFIKASI (Pusat Komando)
+# ==========================================
+@router.callback_query(F.data == "menu_notifications")
+async def show_notification_menu(callback: types.CallbackQuery, db: DatabaseService, bot: Bot):
+    await render_notification_menu_ui(bot, callback.message.chat.id, callback.from_user.id, db, callback.id)
+
+# ==========================================
+# 2. HANDLER LIST (Universal)
 # ==========================================
 @router.callback_query(F.data.startswith("notif_list_"))
 async def view_unified_list(callback: types.CallbackQuery, db: DatabaseService, bot: Bot):
@@ -56,11 +79,12 @@ async def view_unified_list(callback: types.CallbackQuery, db: DatabaseService, 
     bot_info = await bot.get_me()
     bot_username = bot_info.username
 
-    # KONFIGURASI "LIKE" SUDAH DIHAPUS DARI SINI
+    # Masukkan ke history tumpukan navigasi (Agar [Kembali] tahu harus me-refresh list ini)
+    await db.push_nav(user_id, f"notif_list_{menu_type}")
+
     config = {
         "unmask": {"db": "UNMASK_CHAT", "title": "🔓 DAFTAR UNMASK SULTAN", "ctx": "unmask"},
         "inbox":  {"db": "CHAT", "title": "📥 INBOX PESAN AKTIF", "ctx": "inbox"},
-        "match":  {"db": "MATCH", "title": "🔥 DAFTAR MATCHING", "ctx": "match"},
         "view":   {"db": "VIEW", "title": "👀 PENGUNJUNG PROFIL", "ctx": "view"}
     }
     
@@ -79,13 +103,11 @@ async def view_unified_list(callback: types.CallbackQuery, db: DatabaseService, 
         else: text_content += "<i>Belum ada pengunjung profil baru.</i>"
     else:
         for i, person in enumerate(interactors, 1):
-            # Kunci sensor nama hanya berlaku untuk View Profil sekarang
             is_locked = (menu_type == "view") and not (current_user.is_vip or current_user.is_vip_plus)
             name = f"{person.full_name[:3]}***" if is_locked else person.full_name
             age = person.age
             city = html.escape(person.location_name) if person.location_name else "Lokasi Tidak Diketahui"
             
-            # Deep link URL (Penting: Parameter unmask tidak berubah)
             if menu_type == "unmask":
                 url = f"https://t.me/{bot_username}?start=view_{person.id}_unmask"
             else:
@@ -96,27 +118,24 @@ async def view_unified_list(callback: types.CallbackQuery, db: DatabaseService, 
             has_date = hasattr(person, 'notif_date') and person.notif_date
 
             if menu_type == "unmask":
-                text_content += f"{i}. <b>{name}</b>, {age}th, {city}, jatuh cinta padamu. <a href='{url}'>[Lihat Profil & Balas]</a>\n\n"
+                text_content += f"{i}. <b>{name}</b>, {age}th, {city}, jatuh cinta padamu. <a href=\"{url}\">[Lihat Profil & Balas]</a>\n\n"
             elif menu_type == "inbox":
                 expiry_hours = 48 if current_user.is_vip_plus else 24
                 exp_date = (person.notif_date + timedelta(hours=expiry_hours)).strftime("%H:%M %d/%m/%Y") if has_date else "Segera"
-                text_content += f"{i}. <b>{name}</b>, {age}th, {city}. (Hilang {exp_date}) <a href='{url}'>[Balas Pesan]</a>\n\n"
+                text_content += f"{i}. <b>{name}</b>, {age}th, {city}. (Hilang {exp_date}) <a href=\"{url}\">[Balas Pesan]</a>\n\n"
             elif menu_type == "match":
-                text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href='{url}'>[Lihat Profil & Chat]</a>\n\n"
-            else: # Menu VIEW
+                text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href=\"{url}\">[Lihat Profil & Chat]</a>\n\n"
+            else: 
                 if is_locked:
-                    text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href='{url_lock}'>[🔒 Upgrade VIP]</a>\n"
+                    text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href=\"{url_lock}\">[🔒 Upgrade VIP]</a>\n"
                 else:
-                    text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href='{url}'>[Lihat Profil]</a>\n"
+                    text_content += f"{i}. <b>{name}</b>, {age}th, {city}. <a href=\"{url}\">[Lihat Profil]</a>\n"
 
-    kb_nav = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 KEMBALI", callback_data="menu_notifications")],
-        [InlineKeyboardButton(text="🏠 DASHBOARD", callback_data="back_to_dashboard")]
-    ])
-
+    # ❌ TOMBOL BACK/DASHBOARD DIHAPUS. Hanya Edit Gambar.
     media = InputMediaPhoto(media=BANNER_PHOTO_ID, caption=text_content, parse_mode="HTML")
-    try: await callback.message.edit_media(media=media, reply_markup=kb_nav)
+    anchor_id = current_user.anchor_msg_id
+    
+    try: await bot.edit_message_media(chat_id=callback.message.chat.id, message_id=anchor_id, media=media, reply_markup=None)
     except Exception: 
-        try: await callback.message.answer_photo(photo=BANNER_PHOTO_ID, caption=text_content, reply_markup=kb_nav, parse_mode="HTML")
-        except: pass
+        pass
     await callback.answer()
