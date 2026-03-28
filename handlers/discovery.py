@@ -334,19 +334,29 @@ async def ask_location(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(gps_msg_id=msg_gps.message_id)
     await callback.answer()
 
-@router.callback_query(F.data.startswith("city_disc_"), DiscoveryState.in_lobby)
-async def handle_manual_location_update(callback: types.CallbackQuery, db: DatabaseService, state: FSMContext, bot: Bot):
-    city_info = CITY_DATA_DISC.get(callback.data)
+@router.callback_query(F.data.startswith("city_"), DiscoveryState.waiting_location)
+async def handle_manual_city_discovery(callback: types.CallbackQuery, db: DatabaseService, state: FSMContext, bot: Bot):
+    # FIX: Tarik Reply Keyboard (GPS) yang nyangkut secepatnya
+    try:
+        from aiogram.types import ReplyKeyboardRemove
+        temp_msg = await bot.send_message(chat_id=callback.message.chat.id, text="🔄", reply_markup=ReplyKeyboardRemove())
+        await bot.delete_message(chat_id=callback.message.chat.id, message_id=temp_msg.message_id)
+    except: pass
+    
+    city_info = CITY_DATA.get(callback.data)
     if city_info:
-        await db.update_user_location(callback.from_user.id, city_info["lat"], city_info["lng"], city_info["name"], f"#{city_info['tag']}")
+        await state.update_data(lat=city_info["lat"], lon=city_info["lng"], city_name=city_info["name"])
+        await callback.answer(f"✅ Filter lokasi: {city_info['name']}")
         
-        data = await state.get_data()
-        try: await bot.delete_message(chat_id=callback.message.chat.id, message_id=data.get('gps_msg_id'))
-        except: pass
-        
-        await callback.answer(f"Lokasi diperbarui ke {city_info['name']}!", show_alert=True)
-        # GANTI PEMANGGILAN DUMMY DENGAN CORE RENDERER
-        await render_discovery_ui(bot, callback.message.chat.id, callback.from_user.id, db, state)
+        # Lanjut ke langkah filter usia
+        await state.set_state(DiscoveryState.waiting_age_min)
+        await callback.message.edit_caption(
+            caption=f"📍 Kota: <b>{city_info['name']}</b>\n\nSekarang, berapa <b>Usia Minimal</b> teman yang kamu cari? (18-60)", 
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ GANTI LOKASI", callback_data="menu_discovery")]]),
+            parse_mode="HTML"
+        )
+    else:
+        await callback.answer("⚠️ Gagal memilih lokasi.", show_alert=True)
 
 @router.message(F.location, DiscoveryState.in_lobby)
 async def handle_location_update(message: types.Message, db: DatabaseService, state: FSMContext, bot: Bot):
