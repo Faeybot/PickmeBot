@@ -20,7 +20,7 @@ from services.notification import NotificationService
 # --- 2. IMPORT HANDLERS ---
 from handlers import (
     admin, start, feed, discovery, profile, 
-    pricing, boost, registration, status,
+    pricing, boost, registration, status, preview
     withdraw, chat, inbox, unmask, notification as notifications_handler,
     referrals, who_like_me, match
 )
@@ -134,6 +134,7 @@ async def main():
     dp.include_router(admin.router)
     dp.include_router(feed.router)
     dp.include_router(discovery.router)
+    dp.include_router(preview.router)
     dp.include_router(who_like_me.router)
     dp.include_router(match.router)
     dp.include_router(chat.router)
