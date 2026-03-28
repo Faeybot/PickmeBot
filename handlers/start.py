@@ -227,7 +227,10 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
         CallbackMock = namedtuple('CallbackQuery', ['data', 'from_user', 'message', 'answer'])
         mock = CallbackMock(data=previous_menu, from_user=message.from_user, message=types.Message(message_id=(await db.get_user(user_id)).anchor_msg_id, date=message.date, chat=message.chat), answer=lambda *a,**kw: asyncio.sleep(0))
         await view_unified_list(mock, db, bot)
-
+    elif previous_menu == "inbox":
+        from handlers.inbox import render_inbox_ui
+        await render_inbox_ui(bot, chat_id, user_id, db)
+    
     
     else:
         # Fallback safety jika menu asal tidak terbaca, kembali ke Dashboard
