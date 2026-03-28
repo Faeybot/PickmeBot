@@ -119,7 +119,7 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
     # ==========================================
     # RENDER UI PROFIL LENGKAP (MODE SPA)
     # ==========================================
-    target_kasta = "💎 VIP+" if target.is_vip_plus else "🌟 VIP" if target.is_vip else "🎭 TALENT" if target.is_talent else "👤 FREE"
+    target_kasta = "💎 VIP+" if target.is_vip_plus else "🌟 VIP" if target.is_vip else "🎭 PREMIUM" if target.is_premium else "👤 FREE"
     
     from handlers.start import get_readable_interests 
     minat = get_readable_interests(target.interests) if hasattr(target, 'interests') else "-"
