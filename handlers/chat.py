@@ -48,7 +48,7 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
     is_active = session_data and session_data.expires_at > now_ts
     should_deduct = False
     
-    # 2. Logika Gerbang Kuota (1x Potong per Sesi)
+    # 2. Logika Gerbang Kuota
     if not is_active:
         if origin in ["public", "extend", "feed", "discovery"]:
             if not (user.is_vip or user.is_vip_plus):
@@ -65,24 +65,24 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
             if not sukses: 
                 return await callback.answer("Gagal memotong kuota.", show_alert=True)
             
-            duration_hrs = 48 if user.is_vip_plus else 24
+            # PENENTUAN DURASI BERDASARKAN ASAL
+            if origin == "unmask":
+                duration_hrs = 48
+            else:
+                duration_hrs = 48 if user.is_vip_plus else 24
+                
             new_expiry_ts = int((datetime.datetime.now() + datetime.timedelta(hours=duration_hrs)).timestamp())
-            
-            # Simpan / Perpanjang Sesi (Tetap simpan origin baru jika bertemu di tempat lain)
             await db.upsert_chat_session(user_id, target_id, new_expiry_ts, origin=origin)
             session_data = await db.get_active_chat_session(user_id, target_id)
     else:
-        # Sesi masih aktif, tapi jika originnya baru (misal dari Match), kita timpa originnya.
         if origin not in ["inbox", "extend"]:
             await db.upsert_chat_session(user_id, target_id, session_data.expires_at, origin=origin)
 
     # 3. Hilangkan counter Notifikasi
     await getattr(db, 'mark_notif_read', lambda u, s, t: None)(user_id, target_id, "CHAT")
-    
-    # Kunci Posisi Navigasi agar Notifikasi tahu user sedang di ruang ini (Silent Notif)
     await db.push_nav(user_id, f"chat_room_{target_id}")
 
-    # 4. Inisialisasi State FSM (Menyiapkan kantong sampah untuk Auto-Sweep)
+    # 4. Inisialisasi State FSM 
     await state.update_data(chat_target_id=target_id, sweep_list=[])
     await state.set_state(ChatState.in_chat_room)
     
@@ -96,33 +96,29 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
         f"⬇️ <b>Ketik pesanmu sekarang:</b>"
     )
     
-    # Bersihkan layar SPA dengan struktur Try-Except multi-baris yang aman
-    try: 
-        await callback.message.delete()
-    except Exception: 
-        pass
+    try: await callback.message.delete()
+    except Exception: pass
     
     banner_msg = await callback.message.answer(banner_text, reply_markup=reply_kb, parse_mode="HTML")
     
-    # Tambahkan ID Banner ke daftar sapu bersih
     current_data = await state.get_data()
     sweep = current_data.get('sweep_list', [])
     sweep.append(banner_msg.message_id)
-    await state.update_data(sweep_list=sweep)
 
-    # 6. LOAD HISTORY DARI CHANNEL/GROUP (Restoration - MAX 20 PESAN TERAKHIR)
+    # FIX: 6. LOAD HISTORY (Melompati Header Thread)
     if session_data and getattr(session_data, 'channel_msg_ids', []):
-        recent_msgs = session_data.channel_msg_ids[-20:] # Anti-FloodWait Telegram Limit
-        for msg_id in recent_msgs:
-            if CHAT_LOG_GROUP_ID:
-                try:
-                    # Menggunakan copy_message agar pesan tampil seperti asli dari bot
-                    copied = await bot.copy_message(chat_id=user_id, from_chat_id=CHAT_LOG_GROUP_ID, message_id=msg_id)
-                    sweep.append(copied.message_id)
-                except Exception: 
-                    pass
-        await state.update_data(sweep_list=sweep)
-    
+        msg_list = session_data.channel_msg_ids
+        # Hanya load jika ada komentar (index > 0)
+        if len(msg_list) > 1:
+            recent_msgs = msg_list[1:][-20:] # Abaikan index 0 (Header), ambil 20 chat terakhir
+            for msg_id in recent_msgs:
+                if CHAT_LOG_GROUP_ID:
+                    try:
+                        copied = await bot.copy_message(chat_id=user_id, from_chat_id=CHAT_LOG_GROUP_ID, message_id=msg_id)
+                        sweep.append(copied.message_id)
+                    except Exception: pass
+                    
+    await state.update_data(sweep_list=sweep)
     await callback.answer()
 
 # ==========================================
@@ -134,55 +130,40 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
     data = await state.get_data()
     sweep_list = data.get('sweep_list', [])
 
-    # A. LOGIKA KELUAR RUANGAN (AUTO-SWEEP SPA)
     if message.text == "❌ TUTUP OBROLAN" or message.text == "/exit":
         await state.clear()
-        
-        # Bersihkan pesan input user
         try: await message.delete()
         except Exception: pass
-        
-        # Sapu bersih semua chat bubble di layar
         for msg_id in sweep_list:
             try: await bot.delete_message(chat_id=user_id, message_id=msg_id)
             except Exception: pass
-        
-        # FIX: Panggil ulang Global Keyboard Navigasi agar kembali muncul di bawah layar
+            
         from utils.ui_manager import UIManager
         global_nav = UIManager.get_global_nav_keyboard()
         await message.answer("🚪 <i>Keluar dari ruang obrolan...</i>", reply_markup=global_nav, parse_mode="HTML")
         
-        # Arahkan kembali ke UI Inbox yang bersih
         from handlers.inbox import render_inbox_ui
         await render_inbox_ui(bot, message.chat.id, user_id, db)
         return
 
-    # B. LOGIKA MENGIRIM PESAN
     if not message.text:
         msg = await message.answer("⚠️ Maaf, sistem ini hanya mendukung pesan teks.")
         sweep_list.append(msg.message_id)
         await state.update_data(sweep_list=sweep_list)
-        try: 
-            await message.delete() 
-        except Exception: 
-            pass
+        try: await message.delete() 
+        except Exception: pass
         return
 
     target_id = data.get('chat_target_id')
     sender = await db.get_user(user_id)
     
-    # 1. Hapus input asli user agar rapi
-    try: 
-        await message.delete()
-    except Exception: 
-        pass
+    try: await message.delete()
+    except Exception: pass
 
-    # 2. Render ulang input user sebagai "Bubble Bot" agar seragam
     bubble_msg = await message.answer(f"👤 <b>Anda:</b>\n{html.escape(message.text)}", parse_mode="HTML")
     sweep_list.append(bubble_msg.message_id)
     await state.update_data(sweep_list=sweep_list)
 
-    # 3. Validasi Expiry (Jaga-jaga jika sesi habis saat asyik mengetik)
     session_data = await db.get_active_chat_session(user_id, target_id)
     now_ts = int(datetime.datetime.now().timestamp())
     if not session_data or session_data.expires_at < now_ts:
@@ -191,24 +172,40 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
         await state.update_data(sweep_list=sweep_list)
         return
 
-    # 4. LOGGING KE GRUP (SEBAGAI DATABASE)
+    # FIX: 4. LOGGING KE GRUP (SEBAGAI THREAD / KOMENTAR)
     saved_msg_id = None
     if CHAT_LOG_GROUP_ID:
         try:
-            log_text = f"🗄 <b>[{session_data.origin.upper()}]</b>\nDari: <code>{user_id}</code> ➡️ <code>{target_id}</code>\nIsi:\n<i>{html.escape(message.text)}</i>"
-            saved_log = await bot.send_message(CHAT_LOG_GROUP_ID, log_text, parse_mode="HTML")
+            thread_id = None
+            if session_data.channel_msg_ids:
+                thread_id = session_data.channel_msg_ids[0]
+            else:
+                # Buat Pesan Header Baru jika belum ada
+                header_text = f"🗄 <b>ROOM [{session_data.origin.upper()}]</b>\nUser 1: <code>{user_id}</code>\nUser 2: <code>{target_id}</code>"
+                header_msg = await bot.send_message(CHAT_LOG_GROUP_ID, header_text, parse_mode="HTML")
+                thread_id = header_msg.message_id
+                
+                # Simpan ID Header ke database
+                await db.upsert_chat_session(user_id, target_id, session_data.expires_at, new_channel_msg_id=thread_id)
+                session_data = await db.get_active_chat_session(user_id, target_id) 
+
+            # Bentuk Chat Bubble Bersih untuk direply ke Header
+            clean_bubble = f"👤 <b>{sender.full_name.upper()}:</b>\n{html.escape(message.text)}"
+            saved_log = await bot.send_message(CHAT_LOG_GROUP_ID, clean_bubble, reply_to_message_id=thread_id, parse_mode="HTML")
             saved_msg_id = saved_log.message_id
         except Exception as e:
             logging.error(f"Gagal Simpan History ke Grup: {e}")
 
-    # 5. UPDATE DATABASE SQL (Simpan ID Pesan Grup & Cuplikan Terakhir)
-    await db.upsert_chat_session(user_id, target_id, session_data.expires_at, last_message=message.text, new_channel_msg_id=saved_msg_id)
+    # 5. UPDATE DATABASE SQL
+    if saved_msg_id:
+        await db.upsert_chat_session(user_id, target_id, session_data.expires_at, last_message=message.text, new_channel_msg_id=saved_msg_id)
+    else:
+        await db.upsert_chat_session(user_id, target_id, session_data.expires_at, last_message=message.text)
 
-    # 6. LOGIKA DISTRIBUSI POIN & NOTIF (Didasarkan pada Origin)
+    # 6. DISTRIBUSI POIN & NOTIF
     target_session = await db.get_active_chat_session(target_id, user_id)
     origin_type = target_session.origin if target_session else session_data.origin
     
-    # Target membalas (Penerima awal membalas inisiator)
     if origin_type == "unmask":
         log_key = f"UnmaskReplyBonus_{user_id}_{target_id}"
         if not await db.check_bonus_exists(log_key):
@@ -229,15 +226,11 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
     target_user = await db.get_user(target_id)
     kasta = "💎 VIP+" if sender.is_vip_plus else "🌟 VIP" if sender.is_vip else "👤 FREE"
     
-    # Cek apakah target sedang ada di ruang obrolan dengan user ini (Silent Receive)
     if target_user.nav_stack and target_user.nav_stack[-1] == f"chat_room_{user_id}":
         try:
-            # Kirim langsung sebagai bubble chat tanpa tombol
             await bot.send_message(target_id, f"👤 <b>{sender.full_name.upper()}:</b>\n{html.escape(message.text)}", parse_mode="HTML")
-        except Exception: 
-            pass
+        except Exception: pass
     else:
-        # Target tidak di ruang chat, kirim pesan notifikasi biasa
         target_text = (
             f"💬 <b>PESAN BARU ({kasta})</b>\n"
             f"Dari: <b>{sender.full_name.upper()}</b>\n"
@@ -249,5 +242,4 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
             await bot.send_message(target_id, target_text, parse_mode="HTML")
             notif_service = NotificationService(bot, db)
             await notif_service.trigger_new_message(target_id, user_id, sender.full_name, True)
-        except Exception:
-            pass
+        except Exception: pass
