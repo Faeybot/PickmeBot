@@ -76,8 +76,8 @@ async def render_withdraw_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseS
         else:
             text += f"⚠️ <i>Saldo belum mencapai minimal penarikan. Balas pesan Sultan untuk mengklaim bonus poin tambahan!</i>"
     else:
-        text += "🔒 <b>AKSES TERKUNCI</b>\n<i>Hanya akun status Talent atau VIP yang dapat mencairkan poin menjadi uang tunai.</i>"
-        kb.append([InlineKeyboardButton(text="💎 UPGRADE TALENT SEKARANG", callback_data="menu_pricing")])
+        text += "🔒 <b>AKSES TERKUNCI</b>\n<i>Hanya akun Premium yang bisa mencairkan poin menjadi uang tunai.</i>"
+        kb.append([InlineKeyboardButton(text="💎 UPGRADE PREMIUM SEKARANG", callback_data="menu_pricing")])
 
     # ❌ TOMBOL BACK DIHAPUS
     media = InputMediaPhoto(media=BANNER_PHOTO_ID, caption=text, parse_mode="HTML")
