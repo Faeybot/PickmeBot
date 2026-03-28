@@ -202,10 +202,13 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
     # 3. Routing bersih tanpa simulasi callback
     if previous_menu == "dashboard":
         await render_dashboard_ui(bot, chat_id, user_id, db, state)
-        
-    # elif previous_menu == "feed":
-    #     from handlers.feed import render_feed_ui
-    #     await render_feed_ui(bot, chat_id, user_id, db, state)
+    elif previous_menu == "feed":
+        from handlers.feed import render_feed_ui
+        await render_feed_ui(bot, chat_id, user_id, db, state)
+    elif previous_menu == "boost":
+        from handlers.boost import render_boost_ui
+        await render_boost_ui(bot, chat_id, user_id, db)    
+    
     
     else:
         # Fallback safety jika menu asal tidak terbaca, kembali ke Dashboard
