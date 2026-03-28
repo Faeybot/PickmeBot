@@ -1,6 +1,7 @@
 import os
 import html
 import logging
+import asyncio
 from aiogram import Router, F, types, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import CommandStart, CommandObject
@@ -43,7 +44,8 @@ async def render_dashboard_ui(bot: Bot, chat_id: int, user_id: int, db: Database
     # Set navigasi kembali ke 'dashboard'
     await db.push_nav(user_id, "dashboard")
 
-    kasta = "💎 VIP+" if user.is_vip_plus else "🌟 VIP" if user.is_vip else "🎭 TALENT" if user.is_talent else "👤 FREE"
+    # FIX KASTA: Menggunakan is_premium dan sebutan PREMIUM
+    kasta = "💎 VIP+" if user.is_vip_plus else "🌟 VIP" if user.is_vip else "🎭 PREMIUM" if user.is_premium else "👤 FREE"
     
     dashboard_text = (
         f"👋 Halo, <b>{user.full_name.upper()}</b>!\n"
@@ -152,6 +154,11 @@ async def command_start_handler(message: types.Message, command: CommandObject =
             target_id = int(parts[1])
             origin_type = parts[2] if len(parts) >= 3 else "public" 
             from handlers.preview import process_profile_preview
+            
+            # Hapus pesan deep link dari user agar rapi
+            try: await message.delete()
+            except: pass
+            
             return await process_profile_preview(message, bot, db, viewer_id=user_id, target_id=target_id, context_source=origin_type)
         except Exception as e:
             logging.error(f"Error Deep Link Routing: {e}")
@@ -239,9 +246,15 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
     elif previous_menu == "manage_photos":
         from handlers.profile import render_manage_photos_ui
         await render_manage_photos_ui(bot, chat_id, user_id, db)
-
-
-    
+    elif previous_menu == "referral":
+        from handlers.referrals import render_referral_ui
+        await render_referral_ui(bot, chat_id, user_id, db)
+    elif previous_menu in ["pricing", "pricing_trial"]:
+        from handlers.pricing import render_pricing_ui
+        await render_pricing_ui(bot, chat_id, user_id, db)
+    elif previous_menu == "withdraw":
+        from handlers.withdraw import render_withdraw_ui
+        await render_withdraw_ui(bot, chat_id, user_id, db, state)
     else:
         # Fallback safety jika menu asal tidak terbaca, kembali ke Dashboard
         await render_dashboard_ui(bot, chat_id, user_id, db, state)
