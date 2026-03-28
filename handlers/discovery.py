@@ -35,6 +35,7 @@ CITY_DATA_DISC = {
 
 class DiscoveryState(StatesGroup):
     in_lobby = State()
+    waiting_location = State() # FIX 1: Tambahkan State ini
     setting_age_min = State()
     setting_age_max = State()
     swiping = State()
@@ -58,7 +59,6 @@ def get_age_keyboard():
             kb.append(row)
             row = []
     if row: kb.append(row)
-    # ❌ TOMBOL BATAL DIHAPUS (Gunakan tombol navigasi bawah)
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -70,7 +70,6 @@ async def render_discovery_ui(bot: Bot, chat_id: int, user_id: int, db: Database
     user = await db.get_user(user_id)
     if not user: return False
 
-    # Masukkan ke history tumpukan navigasi
     await db.push_nav(user_id, "discovery")
 
     unreads = await db.get_all_unread_counts(user_id)
@@ -90,16 +89,16 @@ async def render_discovery_ui(bot: Bot, chat_id: int, user_id: int, db: Database
         f"🎯 <b>FILTER AKTIF:</b>\n"
         f"• Mencari: <b>{target_gender}</b>\n"
         f"• Usia: <b>{user.filter_age_min} - {user.filter_age_max} Tahun</b>\n"
+        f"• Lokasi: <b>{user.location_name}</b>\n" # FIX: Menampilkan lokasi aktif
         f"<code>━━━━━━━━━━━━━━━━━━</code>"
     )
 
-    # ❌ TOMBOL BACK TO DASHBOARD DIHAPUS
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 MULAI MENCARI", callback_data="disc_start_search")],
         [InlineKeyboardButton(text=f"❤️ SIAPA SUKA SAYA ({count_like})", callback_data="list_who_like_me")],
         [InlineKeyboardButton(text=f"🔥 DAFTAR MATCH ({count_match})", callback_data="list_my_matches")],
         [InlineKeyboardButton(text="⚙️ UBAH FILTER USIA", callback_data="disc_set_age")],
-        [InlineKeyboardButton(text="📍 UPDATE LOKASI", callback_data="disc_update_location")]
+        [InlineKeyboardButton(text="📍 UPDATE LOKASI PENCARIAN", callback_data="disc_update_location")]
     ])
 
     media = InputMediaPhoto(media=BANNER_PHOTO_ID, caption=text, parse_mode="HTML")
@@ -119,7 +118,6 @@ async def render_discovery_ui(bot: Bot, chat_id: int, user_id: int, db: Database
                 try: await bot.delete_message(chat_id=chat_id, message_id=anchor_id)
                 except: pass
             
-            # Restore Global Nav saat pesan baru dibuat
             nav_msg = await bot.send_message(chat_id, "⚙️ Memuat area Discovery...", reply_markup=UIManager.get_global_nav_keyboard())
             await bot.delete_message(chat_id, nav_msg.message_id)
 
@@ -144,20 +142,24 @@ async def show_discovery_lobby(callback: types.CallbackQuery, db: DatabaseServic
 # ==========================================
 @router.callback_query(F.data == "disc_set_age", DiscoveryState.in_lobby)
 async def ask_filter_age_min(callback: types.CallbackQuery, state: FSMContext):
-    text = "⚙️ <b>PENGATURAN RENTANG USIA</b>\n\nSilakan tap <b>Usia Minimal</b> target yang kamu cari:"
+    text = "⚙️ <b>PENGATURAN RENTANG USIA</b>\n\nSilakan tap <b>Usia Minimal</b> target yang kamu cari:\n<i>(Gunakan navigasi bawah untuk batal)</i>"
     kb = get_age_keyboard()
-    await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+    try: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+    except: pass
     await state.set_state(DiscoveryState.setting_age_min)
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("age_select_"), DiscoveryState.setting_age_min)
 async def ask_filter_age_max(callback: types.CallbackQuery, state: FSMContext):
     age_min = int(callback.data.split("_")[2])
     await state.update_data(temp_age_min=age_min)
 
-    text = f"⚙️ <b>PENGATURAN RENTANG USIA</b>\n\nUsia Minimal: <b>{age_min}</b>\nSekarang tap <b>Usia Maksimal</b> target yang kamu cari:"
+    text = f"⚙️ <b>PENGATURAN RENTANG USIA</b>\n\nUsia Minimal: <b>{age_min}</b>\nSekarang tap <b>Usia Maksimal</b> target yang kamu cari:\n<i>(Gunakan navigasi bawah untuk batal)</i>"
     kb = get_age_keyboard()
-    await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+    try: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+    except: pass
     await state.set_state(DiscoveryState.setting_age_max)
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("age_select_"), DiscoveryState.setting_age_max)
 async def save_filter_age(callback: types.CallbackQuery, state: FSMContext, db: DatabaseService, bot: Bot):
@@ -180,7 +182,92 @@ async def save_filter_age(callback: types.CallbackQuery, state: FSMContext, db: 
 
 
 # ==========================================
-# 4. MESIN SWIPER (Logika Utama Loop Profil)
+# 4. UPDATE LOKASI PENCARIAN
+# ==========================================
+@router.callback_query(F.data == "disc_update_location", DiscoveryState.in_lobby)
+async def ask_location(callback: types.CallbackQuery, state: FSMContext):
+    inline_kb_list, temp_row = [], []
+    for code, info in CITY_DATA_DISC.items():
+        temp_row.append(InlineKeyboardButton(text=info["name"], callback_data=code))
+        if len(temp_row) == 3: 
+            inline_kb_list.append(temp_row)
+            temp_row = []
+    if temp_row: inline_kb_list.append(temp_row)
+
+    text = "📍 <b>UPDATE LOKASI PENCARIAN</b>\n\nPilih kota besarmu atau kirim koordinat GPS untuk memudahkan pencarian teman di sekitarmu.\n<i>(Gunakan navigasi bawah untuk batal)</i>"
+    try: await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_kb_list), parse_mode="HTML")
+    except: pass
+    
+    # Memunculkan tombol GPS di bawah layar
+    kb_gps = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📍 KIRIM KOORDINAT GPS", request_location=True)],
+            [KeyboardButton(text="⬅️ Kembali")]
+        ], 
+        resize_keyboard=True, 
+        one_time_keyboard=True
+    )
+    msg_gps = await callback.message.answer("Atau gunakan GPS otomatis dengan menekan tombol di bawah:", reply_markup=kb_gps)
+    
+    await state.update_data(gps_msg_id=msg_gps.message_id)
+    
+    # FIX 2: Ubah state agar bot siap menerima klik kota atau lokasi GPS
+    await state.set_state(DiscoveryState.waiting_location) 
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("city_disc_"), DiscoveryState.waiting_location)
+async def handle_manual_city_discovery(callback: types.CallbackQuery, db: DatabaseService, state: FSMContext, bot: Bot):
+    # Bersihkan tombol GPS yang nyangkut
+    try:
+        temp_msg = await bot.send_message(chat_id=callback.message.chat.id, text="🔄", reply_markup=ReplyKeyboardRemove())
+        await bot.delete_message(chat_id=callback.message.chat.id, message_id=temp_msg.message_id)
+    except: pass
+    
+    # Hapus pesan instruksi GPS
+    data = await state.get_data()
+    try: await bot.delete_message(chat_id=callback.message.chat.id, message_id=data.get('gps_msg_id'))
+    except: pass
+
+    city_info = CITY_DATA_DISC.get(callback.data)
+    if city_info:
+        async with db.session_factory() as session:
+            user = await session.get(UserTable, callback.from_user.id)
+            if user:
+                user.latitude, user.longitude = city_info["lat"], city_info["lng"]
+                user.location_name = city_info["name"]
+                await session.commit()
+                
+        await callback.answer(f"✅ Lokasi pencarian: {city_info['name']}")
+        await render_discovery_ui(bot, callback.message.chat.id, callback.from_user.id, db, state)
+    else:
+        await callback.answer("⚠️ Gagal memilih lokasi.", show_alert=True)
+
+@router.message(F.location, DiscoveryState.waiting_location)
+async def handle_location_update(message: types.Message, db: DatabaseService, state: FSMContext, bot: Bot):
+    try: await message.delete()
+    except: pass
+
+    # Bersihkan tombol GPS yang nyangkut
+    try:
+        temp_msg = await message.answer("🔄", reply_markup=ReplyKeyboardRemove())
+        await temp_msg.delete()
+    except: pass
+
+    async with db.session_factory() as session:
+        user = await session.get(UserTable, message.from_user.id)
+        if user:
+            user.latitude, user.longitude, user.location_name = message.location.latitude, message.location.longitude, "GPS Location"
+            await session.commit()
+            
+    data = await state.get_data()
+    try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get('gps_msg_id'))
+    except: pass
+
+    await render_discovery_ui(bot, message.chat.id, message.from_user.id, db, state)
+
+
+# ==========================================
+# 5. MESIN SWIPER (Logika Utama Loop Profil)
 # ==========================================
 @router.callback_query(F.data == "disc_start_search", DiscoveryState.in_lobby)
 async def start_swiping(callback: types.CallbackQuery, db: DatabaseService, state: FSMContext):
@@ -210,6 +297,7 @@ async def start_swiping(callback: types.CallbackQuery, db: DatabaseService, stat
     
     await state.update_data(queue=[t.id for t in targets], current_index=0)
     await show_next_profile(callback, state, db)
+    await callback.answer()
 
 async def show_next_profile(callback: types.CallbackQuery, state: FSMContext, db: DatabaseService):
     data = await state.get_data()
@@ -234,11 +322,10 @@ async def show_next_profile(callback: types.CallbackQuery, state: FSMContext, db
         f"<i>{index+1} dari {len(queue)} profil</i>"
     )
 
-    # ❌ TOMBOL BACK/DASHBOARD DIHAPUS DARI SINI
     kb_buttons = [
         [
             InlineKeyboardButton(text="❤️ LIKE", callback_data="swipe_like"),
-            InlineKeyboardButton(text="💬 PESAN", callback_data=f"chat_{target.id}_free"),
+            InlineKeyboardButton(text="💬 PESAN", callback_data=f"chat_{target.id}_discovery"), # FIX: origin path
             InlineKeyboardButton(text="❌ DISLIKE", callback_data="swipe_skip")
         ]
     ]
@@ -250,13 +337,12 @@ async def show_next_profile(callback: types.CallbackQuery, state: FSMContext, db
     media = InputMediaPhoto(media=target.photo_id, caption=text, parse_mode="HTML")
     
     try: await callback.message.edit_media(media=media, reply_markup=kb)
-    except:
-        pass
+    except: pass
     
     await state.set_state(DiscoveryState.swiping)
 
 # ==========================================
-# 5. AKSI TOMBOL SWIPING
+# 6. AKSI TOMBOL SWIPING
 # ==========================================
 @router.callback_query(F.data.in_(["swipe_like", "swipe_skip"]), DiscoveryState.swiping)
 async def handle_swipe(callback: types.CallbackQuery, state: FSMContext, db: DatabaseService, bot: Bot):
@@ -302,76 +388,4 @@ async def handle_callback_vip(callback: types.CallbackQuery, state: FSMContext, 
     
     await state.update_data(current_index=index - 1)
     await show_next_profile(callback, state, db)
-
-# ==========================================
-# 6. UPDATE LOKASI PENCARIAN
-# ==========================================
-@router.callback_query(F.data == "disc_update_location", DiscoveryState.in_lobby)
-async def ask_location(callback: types.CallbackQuery, state: FSMContext):
-    inline_kb_list, temp_row = [], []
-    for code, info in CITY_DATA_DISC.items():
-        temp_row.append(InlineKeyboardButton(text=info["name"], callback_data=code))
-        if len(temp_row) == 3: 
-            inline_kb_list.append(temp_row)
-            temp_row = []
-    if temp_row: inline_kb_list.append(temp_row)
-    # ❌ TOMBOL BATAL DIHAPUS
-
-    text = "📍 <b>UPDATE LOKASI PENCARIAN</b>\n\nPilih kota besarmu atau kirim koordinat GPS untuk memudahkan pencarian teman di sekitarmu."
-    await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_kb_list), parse_mode="HTML")
-    
-    # 🛡️ UX Safety: Menambahkan tombol "Kembali" agar user tidak terjebak saat menu GPS pop-up
-    kb_gps = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📍 KIRIM KOORDINAT GPS", request_location=True)],
-            [KeyboardButton(text="⬅️ Kembali")]
-        ], 
-        resize_keyboard=True, 
-        one_time_keyboard=True
-    )
-    msg_gps = await callback.message.answer("Atau gunakan GPS otomatis dengan menekan tombol di bawah:", reply_markup=kb_gps)
-    
-    await state.update_data(gps_msg_id=msg_gps.message_id)
     await callback.answer()
-
-@router.callback_query(F.data.startswith("city_"), DiscoveryState.waiting_location)
-async def handle_manual_city_discovery(callback: types.CallbackQuery, db: DatabaseService, state: FSMContext, bot: Bot):
-    # FIX: Tarik Reply Keyboard (GPS) yang nyangkut secepatnya
-    try:
-        from aiogram.types import ReplyKeyboardRemove
-        temp_msg = await bot.send_message(chat_id=callback.message.chat.id, text="🔄", reply_markup=ReplyKeyboardRemove())
-        await bot.delete_message(chat_id=callback.message.chat.id, message_id=temp_msg.message_id)
-    except: pass
-    
-    city_info = CITY_DATA.get(callback.data)
-    if city_info:
-        await state.update_data(lat=city_info["lat"], lon=city_info["lng"], city_name=city_info["name"])
-        await callback.answer(f"✅ Filter lokasi: {city_info['name']}")
-        
-        # Lanjut ke langkah filter usia
-        await state.set_state(DiscoveryState.waiting_age_min)
-        await callback.message.edit_caption(
-            caption=f"📍 Kota: <b>{city_info['name']}</b>\n\nSekarang, berapa <b>Usia Minimal</b> teman yang kamu cari? (18-60)", 
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ GANTI LOKASI", callback_data="menu_discovery")]]),
-            parse_mode="HTML"
-        )
-    else:
-        await callback.answer("⚠️ Gagal memilih lokasi.", show_alert=True)
-
-@router.message(F.location, DiscoveryState.in_lobby)
-async def handle_location_update(message: types.Message, db: DatabaseService, state: FSMContext, bot: Bot):
-    try: await message.delete()
-    except: pass
-
-    async with db.session_factory() as session:
-        user = await session.get(UserTable, message.from_user.id)
-        if user:
-            user.latitude, user.longitude, user.location_name = message.location.latitude, message.location.longitude, "GPS Location"
-            await session.commit()
-            
-    data = await state.get_data()
-    try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get('gps_msg_id'))
-    except: pass
-
-    # HAPUS OBJECT DUMMY, GANTI DENGAN CORE RENDERER
-    await render_discovery_ui(bot, message.chat.id, message.from_user.id, db, state)
