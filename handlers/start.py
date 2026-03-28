@@ -82,10 +82,16 @@ async def render_dashboard_ui(bot: Bot, chat_id: int, user_id: int, db: Database
                 try: await bot.delete_message(chat_id=chat_id, message_id=anchor_id)
                 except: pass
                 
+            # FIX SPA: Trik Sapu Bersih Keyboard GPS yang nyangkut di Dashboard
+            try:
+                from aiogram.types import ReplyKeyboardRemove
+                sweep_msg = await bot.send_message(chat_id, "🔄", reply_markup=ReplyKeyboardRemove())
+                await bot.delete_message(chat_id, sweep_msg.message_id)
+            except: pass
+
             # Kirim keyboard navigasi bawah statis
             global_nav = UIManager.get_global_nav_keyboard()
             
-            # FIX: JANGAN DIHAPUS PESANNYA! Kita ubah teksnya jadi lebih elegan.
             # Pesan ini bertugas sebagai "Jangkar" untuk menahan tombol navigasi bawah agar tidak hilang.
             await bot.send_message(
                 chat_id, 
@@ -166,7 +172,15 @@ async def command_start_handler(message: types.Message, command: CommandObject =
             return await process_profile_preview(message, bot, db, viewer_id=user_id, target_id=target_id, context_source=origin_type)
         except Exception as e:
             logging.error(f"Error Deep Link Routing: {e}")
-            return await message.answer("⚠️ Gagal memuat profil. Format link tidak valid atau ada kendala sistem.")
+            
+            # FIX SPA: Auto-Delete Pesan Error agar tidak numpuk
+            err_msg = await message.answer("⚠️ Gagal memuat profil. Format link tidak valid atau ada kendala sistem.")
+            await asyncio.sleep(3)
+            try: await err_msg.delete()
+            except: pass
+            
+            # Lempar kembali ke dashboard agar layar tidak stuck kosong
+            return await render_dashboard_ui(bot, chat_id, user_id, db, state)
 
     # --- D. TAMPILKAN DASHBOARD UTAMA (Panggil Fungsi Native) ---
     await render_dashboard_ui(bot, chat_id, user_id, db, state)
@@ -203,22 +217,20 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # FIX 1: Bersihkan state FSM agar sistem tidak menunggu input (misal: lokasi/foto)
+    # Bersihkan state FSM agar sistem tidak menunggu input
     if state: await state.clear()
     
     # 1. Hapus teks "⬅️ Kembali"
     try: await message.delete()
     except: pass
     
-    # FIX 2: Trik Sapu Bersih Keyboard Bawah (GPS) yang nyangkut
+    # Trik Sapu Bersih Keyboard Bawah (GPS) yang nyangkut
     try:
         from utils.ui_manager import UIManager
         global_nav = UIManager.get_global_nav_keyboard()
-        # Kirim pesan bawa keyboard default, lalu hapus secepat kilat
         temp_msg = await bot.send_message(chat_id, "🔄", reply_markup=global_nav)
         await bot.delete_message(chat_id, temp_msg.message_id)
     except:
-        # Jaring pengaman jika terjadi error import
         from aiogram.types import ReplyKeyboardRemove
         temp_msg = await bot.send_message(chat_id, "🔄", reply_markup=ReplyKeyboardRemove())
         await bot.delete_message(chat_id, temp_msg.message_id)
@@ -248,7 +260,6 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
         from handlers.notification import render_notification_menu_ui
         await render_notification_menu_ui(bot, chat_id, user_id, db)
     elif previous_menu and previous_menu.startswith("notif_list_"):
-        # Mensimulasikan klik callback pada list yang spesifik
         from handlers.notification import view_unified_list
         from collections import namedtuple
         CallbackMock = namedtuple('CallbackQuery', ['data', 'from_user', 'message', 'answer'])
