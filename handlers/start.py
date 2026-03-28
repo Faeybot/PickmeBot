@@ -230,7 +230,17 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
     elif previous_menu == "inbox":
         from handlers.inbox import render_inbox_ui
         await render_inbox_ui(bot, chat_id, user_id, db)
-    
+    elif previous_menu == "status":
+        from handlers.status import render_status_ui
+        await render_status_ui(bot, chat_id, user_id, db)
+    elif previous_menu == "profile":
+        from handlers.profile import render_profile_ui
+        await render_profile_ui(bot, chat_id, user_id, db, state)
+    elif previous_menu == "manage_photos":
+        from handlers.profile import render_manage_photos_ui
+        await render_manage_photos_ui(bot, chat_id, user_id, db)
+
+
     
     else:
         # Fallback safety jika menu asal tidak terbaca, kembali ke Dashboard
