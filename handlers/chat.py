@@ -9,7 +9,6 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 
 from services.database import DatabaseService
 from services.notification import NotificationService 
-from utils.ui_manager import UIManager
 
 router = Router()
 
@@ -39,7 +38,8 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
     
     user = await db.get_user(user_id)
     target = await db.get_user(target_id)
-    if not target: return await callback.answer("❌ Profil tidak ditemukan.", show_alert=True)
+    if not target: 
+        return await callback.answer("❌ Profil tidak ditemukan.", show_alert=True)
 
     # 1. Cek Database Sesi
     session_data = await db.get_active_chat_session(user_id, target_id)
@@ -62,7 +62,8 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
                 return await callback.answer("❌ Kuota Pesan Anda habis! Silakan tunggu reset besok.", show_alert=True)
             
             sukses = await db.use_message_quota(user_id)
-            if not sukses: return await callback.answer("Gagal memotong kuota.", show_alert=True)
+            if not sukses: 
+                return await callback.answer("Gagal memotong kuota.", show_alert=True)
             
             duration_hrs = 48 if user.is_vip_plus else 24
             new_expiry_ts = int((datetime.datetime.now() + datetime.timedelta(hours=duration_hrs)).timestamp())
@@ -95,9 +96,11 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
         f"⬇️ <b>Ketik pesanmu sekarang:</b>"
     )
     
-    # Bersihkan layar SPA
-    try: await callback.message.delete()
-    except: pass
+    # Bersihkan layar SPA dengan struktur Try-Except multi-baris yang aman
+    try: 
+        await callback.message.delete()
+    except Exception: 
+        pass
     
     banner_msg = await callback.message.answer(banner_text, reply_markup=reply_kb, parse_mode="HTML")
     
@@ -107,16 +110,17 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
     sweep.append(banner_msg.message_id)
     await state.update_data(sweep_list=sweep)
 
-    # 6. LOAD HISTORY DARI CHANNEL/GROUP (Restoration)
+    # 6. LOAD HISTORY DARI CHANNEL/GROUP (Restoration - MAX 20 PESAN TERAKHIR)
     if session_data and getattr(session_data, 'channel_msg_ids', []):
-    # Ambil maksimal 20 pesan terakhir saja agar tidak kena limit Telegram
-        recent_msgs = session_data.channel_msg_ids[-20:] 
+        recent_msgs = session_data.channel_msg_ids[-20:] # Anti-FloodWait Telegram Limit
         for msg_id in recent_msgs:
             if CHAT_LOG_GROUP_ID:
                 try:
+                    # Menggunakan copy_message agar pesan tampil seperti asli dari bot
                     copied = await bot.copy_message(chat_id=user_id, from_chat_id=CHAT_LOG_GROUP_ID, message_id=msg_id)
                     sweep.append(copied.message_id)
-                    except: pass                 
+                except Exception: 
+                    pass
         await state.update_data(sweep_list=sweep)
     
     await callback.answer()
@@ -135,13 +139,17 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
         await state.clear()
         
         # Bersihkan pesan input user
-        try: await message.delete()
-        except: pass
+        try: 
+            await message.delete()
+        except Exception: 
+            pass
         
         # Sapu bersih semua chat bubble di layar
         for msg_id in sweep_list:
-            try: await bot.delete_message(chat_id=user_id, message_id=msg_id)
-            except: pass
+            try: 
+                await bot.delete_message(chat_id=user_id, message_id=msg_id)
+            except Exception: 
+                pass
         
         # Arahkan kembali ke UI Inbox yang bersih
         from handlers.inbox import render_inbox_ui
@@ -153,16 +161,20 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
         msg = await message.answer("⚠️ Maaf, sistem ini hanya mendukung pesan teks.")
         sweep_list.append(msg.message_id)
         await state.update_data(sweep_list=sweep_list)
-        try: await message.delete() # Hapus input foto/stiker user
-        except: pass
+        try: 
+            await message.delete() 
+        except Exception: 
+            pass
         return
 
     target_id = data.get('chat_target_id')
     sender = await db.get_user(user_id)
     
     # 1. Hapus input asli user agar rapi
-    try: await message.delete()
-    except: pass
+    try: 
+        await message.delete()
+    except Exception: 
+        pass
 
     # 2. Render ulang input user sebagai "Bubble Bot" agar seragam
     bubble_msg = await message.answer(f"👤 <b>Anda:</b>\n{html.escape(message.text)}", parse_mode="HTML")
@@ -221,8 +233,8 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
         try:
             # Kirim langsung sebagai bubble chat tanpa tombol
             await bot.send_message(target_id, f"👤 <b>{sender.full_name.upper()}:</b>\n{html.escape(message.text)}", parse_mode="HTML")
-            # Note: Pesan ini akan disapu oleh target secara manual jika ia menekan "Tutup Obrolan".
-        except: pass
+        except Exception: 
+            pass
     else:
         # Target tidak di ruang chat, kirim pesan notifikasi biasa
         target_text = (
@@ -232,10 +244,8 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
             f"<i>{html.escape(message.text)}</i>\n"
             f"<code>━━━━━━━━━━━━━━━━━━</code>"
         )
-        # ❌ TOMBOL DASHBOARD/INBOX DIHAPUS (Bisa diakses dari UI Notifikasi Target)
         try:
             await bot.send_message(target_id, target_text, parse_mode="HTML")
-            # Trigger pop-up/notif di background (Akan dibungkam jika target buka Inbox)
             notif_service = NotificationService(bot, db)
             await notif_service.trigger_new_message(target_id, user_id, sender.full_name, True)
         except Exception:
