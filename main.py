@@ -1,194 +1,187 @@
+import asyncio
 import os
-import telebot
-from telebot import types
 import time
+import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
 
-TOKEN = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(TOKEN)
+from aiogram import Bot, Dispatcher, types, BaseMiddleware
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand, BotCommandScopeDefault
 
-# ===== CHANNEL & GROUP =====
-FEED_CHANNEL = "@pickmeindonesia"
-DATING_CHANNEL = "@pickmedating"
-FEED_GROUP = "@pickmechat"
-DATING_GROUP = "@pickmelounge"
+# --- 1. IMPORT SERVICES ---
+from services.database import DatabaseService
+from services.payment import PaymentService
+from services.notification import NotificationService
 
-# ===== LOCATION =====
-LOCATIONS = {
-    "Sumatera": ["Sumatera"],
-    "Kalimantan": ["Kalimantan"],
-    "Sulawesi": ["Sulawesi"],
-    "Jawa Barat": ["Jawa Barat", "Banten", "DKI Jakarta"],
-    "Jawa Tengah": ["Jawa Tengah", "Yogyakarta"],
-    "Jawa Timur": ["Jawa Timur"],
-    "Bali": ["Bali", "Nusa Tenggara"]
-}
+# --- 2. IMPORT HANDLERS ---
+from handlers import (
+    admin, start, feed, discovery, profile, 
+    pricing, boost, registration, status,
+    withdraw, chat, inbox, unmask, notification as notifications_handler,
+    referrals, who_like_me, match
+)
+from handlers.referrals import schedule_referral_evaluation
 
-# ===== USER STATE =====
-user_state = {}          # user_id -> "feed"/"dating"/"comment"
-last_post_time = {}      # anti spam
-post_messages = {}       # message_id -> {type, original_user, likes, comments, timestamp}
+# ==========================================
+# SETTING ZONA WAKTU KE ASIA/JAKARTA (UTC+7)
+# ==========================================
+os.environ['TZ'] = 'Asia/Jakarta'
+try:
+    if hasattr(time, 'tzset'):
+        time.tzset() 
+except Exception:
+    pass 
 
-# ===== ADMIN =====
-ADMINS = [123456789]     # ganti dengan user_id admin Telegram
+load_dotenv()
 
-# ===== HELPERS =====
-def can_post(user_id):
-    now = time.time()
-    if user_id in last_post_time and now - last_post_time[user_id] < 300:
-        return False
-    last_post_time[user_id] = now
-    return True
+# ==========================================
+# 🛡️ MIDDLEWARE: UI CLEANER (SPA UX)
+# ==========================================
+class CleanUIMiddleware(BaseMiddleware):
+    """
+    Menghapus teks input dari user secara instan jika mereka menekan 
+    tombol ReplyKeyboard navigasi, agar layar tetap bersih (SPA feel).
+    """
+    async def __call__(self, handler, event: types.Update, data: dict):
+        if event.message and event.message.text:
+            text = event.message.text
+            # Deteksi tombol navigasi global
+            if text in ["🏠 Dashboard", "⬅️ Kembali"]:
+                try:
+                    await event.message.delete()
+                except Exception as e:
+                    logging.warning(f"Gagal menghapus pesan UI: {e}")
+        return await handler(event, data)
 
-def check_location(user_location):
-    for key, vals in LOCATIONS.items():
-        if user_location in vals:
-            return key
-    return None
 
-def is_joined(user_id, channel):
-    try:
-        member = bot.get_chat_member(channel, user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except:
-        return False
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="start", description="🏠 Dashboard Utama"),
+        BotCommand(command="pricing", description="🛒 Top Up & Upgrade"),
+        BotCommand(command="help", description="💡 Panduan & Bantuan")
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
-def forward_comment_to_group(post_id, user_id, comment_text):
-    post = post_messages.get(post_id)
-    if not post:
-        return
-    group = FEED_GROUP if post["type"]=="feed" else DATING_GROUP
-    bot.send_message(group, f"💬 Comment dari {user_id}:\n{comment_text}")
+async def schedule_daily_reset(db: DatabaseService):
+    tz = ZoneInfo("Asia/Jakarta")
+    while True:
+        now = datetime.now(tz)
+        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        wait_seconds = (next_midnight - now).total_seconds()
+        
+        logging.info(f"⏰ [SCHEDULER] Menunggu {wait_seconds / 3600:.2f} Jam menuju Maintenance.")
+        await asyncio.sleep(wait_seconds)
+        
+        try:
+            await db.check_expired_vip()
+            await db.reset_daily_quotas()
+            if datetime.now(tz).weekday() == 0:
+                await db.reset_weekly_quotas()
+            logging.info("✅ MAINTENANCE BERHASIL!")
+        except Exception as e:
+            logging.error(f"❌ Maintenance Error: {e}")
 
-def build_keyboard(post_id):
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(
-        types.InlineKeyboardButton("❤️ Like", callback_data=f"like_{post_id}"),
-        types.InlineKeyboardButton("💬 Comment", callback_data=f"comment_{post_id}"),
-        types.InlineKeyboardButton("➡️ Next", callback_data=f"next_{post_id}")
+async def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    return keyboard
 
-# ===== COMMANDS =====
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(
-        message.chat.id,
-        "👋 Selamat datang di Pick Me Indonesia (Production Ready)!\n\n"
-        "/feed - Posting Feed\n"
-        "/dating - Posting Dating\n"
-        "/stats - Lihat statistik user/admin"
-    )
-
-@bot.message_handler(commands=['feed'])
-def feed(message):
-    if not is_joined(message.chat.id, FEED_CHANNEL):
-        bot.send_message(message.chat.id, f"⚠️ Kamu harus join {FEED_CHANNEL} dulu!")
-        return
-    user_state[message.chat.id] = "feed"
-    bot.send_message(message.chat.id, "📌 Kirim teks/foto untuk Feed")
-
-@bot.message_handler(commands=['dating'])
-def dating(message):
-    if not is_joined(message.chat.id, DATING_CHANNEL):
-        bot.send_message(message.chat.id, f"⚠️ Kamu harus join {DATING_CHANNEL} dulu!")
-        return
-    user_state[message.chat.id] = "dating"
-    bot.send_message(message.chat.id, "❤️ Kirim profil dating (nama, umur, lokasi)")
-
-@bot.message_handler(commands=['stats'])
-def stats(message):
-    user_id = message.chat.id
-    if user_id not in ADMINS:
-        bot.send_message(user_id, "⚠️ Hanya admin yang bisa melihat statistik.")
-        return
-    msg = "📊 Statistik Postingan:\n"
-    for pid, data in post_messages.items():
-        msg += f"PostID {pid}: {len(data['likes'])} Likes, {len(data['comments'])} Comments\n"
-    bot.send_message(user_id, msg)
-
-# ===== HANDLE POSTS =====
-@bot.message_handler(content_types=['text', 'photo'])
-def handle_post(message):
-    state = user_state.get(message.chat.id)
-    user_id = message.chat.id
-
-    if state is None:
-        return
-
-    if not can_post(user_id):
-        bot.send_message(user_id, "⚠️ Tunggu 5 menit sebelum posting lagi.")
-        return
-
-    # determine channel
-    channel = FEED_CHANNEL if state=="feed" else DATING_CHANNEL
-
-    # handle location for dating
-    if state=="dating" and message.content_type=="text":
-        lines = message.text.splitlines()
-        loc_line = next((l for l in lines if "lokasi" in l.lower()), "")
-        user_location = loc_line.split(":")[-1].strip() if loc_line else ""
-        if check_location(user_location) is None:
-            bot.send_message(user_id, "⚠️ Lokasi tidak valid atau belum tersedia.")
-            return
-
-    # send message with inline keyboard
-    keyboard = build_keyboard(int(time.time()))
-    try:
-        if message.content_type == "photo":
-            sent = bot.send_photo(channel, message.photo[-1].file_id,
-                                  caption=message.caption or "", reply_markup=keyboard)
+    # --- 3. NORMALISASI URL DATABASE ---
+    raw_db_url = os.getenv("DATABASE_URL")
+    if raw_db_url:
+        if raw_db_url.startswith("postgres://"):
+            db_url = raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif raw_db_url.startswith("postgresql://") and "+asyncpg" not in raw_db_url:
+            db_url = raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
         else:
-            sent = bot.send_message(channel, message.text, reply_markup=keyboard)
-        # register post
-        post_messages[sent.message_id] = {
-            "type": state,
-            "user": user_id,
-            "likes": [],
-            "comments": [],
-            "timestamp": time.time()
-        }
-        bot.send_message(user_id, "✅ Post berhasil dikirim!")
+            db_url = raw_db_url
+    else:
+        db_url = "sqlite+aiosqlite:///pickme.db"
+
+    # --- 4. INISIALISASI BOT & SERVICES ---
+    bot = Bot(
+        token=os.getenv("BOT_TOKEN"),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+    dp = Dispatcher(storage=MemoryStorage())
+    
+    # Registrasi Middleware SPA
+    dp.update.middleware(CleanUIMiddleware())
+
+    db = DatabaseService(db_url)
+    await db.create_tables()
+    payment = PaymentService(db)
+    notif_service = NotificationService(bot, db)
+
+    # --- 5. DEPENDENCY INJECTION ---
+    dp["db"] = db
+    dp["payment"] = payment
+    dp["notif"] = notif_service 
+    
+    # Variabel Wajib untuk Pengecekan Awal (Iron Gate)
+    dp["channel_id"] = os.getenv("CHANNEL_ID")
+    dp["group_id"] = os.getenv("GROUP_ID")
+
+    # --- 6. REGISTRASI ROUTER ---
+    dp.include_router(registration.router)
+    dp.include_router(start.router)
+    dp.include_router(referrals.router)
+    dp.include_router(admin.router)
+    dp.include_router(feed.router)
+    dp.include_router(discovery.router)
+    dp.include_router(who_like_me.router)
+    dp.include_router(match.router)
+    dp.include_router(chat.router)
+    dp.include_router(inbox.router)
+    dp.include_router(unmask.router)
+    dp.include_router(profile.router)
+    dp.include_router(pricing.router)
+    dp.include_router(boost.router)
+    dp.include_router(withdraw.router)
+    dp.include_router(status.router)
+    dp.include_router(notifications_handler.router)
+
+    # --- 🛡️ GLOBAL ERROR HANDLER ---
+    @dp.error()
+    async def global_error_handler(event: types.ErrorEvent):
+        logging.error(f"⚠️ [CRITICAL ERROR]: {event.exception}")
+        return True 
+
+    # 🛠️ VARIABEL TASK (GARBAGE COLLECTOR SAFETY)
+    daily_task = None
+    referral_task = None
+
+    try:
+        # --- 7. SET COMMAND MENU ---
+        await set_bot_commands(bot)
+        logging.info("✔️ Tombol Menu Berhasil Dipasang.")
+
+        # --- 8. JALANKAN SCHEDULER ---
+        referral_task = asyncio.create_task(schedule_referral_evaluation(bot, db))
+        daily_task = asyncio.create_task(schedule_daily_reset(db))
+
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("🚀 Bot PickMe Aktif & Tahan Banting (WIB)!")
+        await dp.start_polling(bot)
+
     except Exception as e:
-        bot.send_message(user_id, f"❌ Gagal post: {e}")
-    user_state.pop(user_id)
+        logging.error(f"❌ Error Saat Menjalankan Bot: {e}")
 
-# ===== CALLBACK HANDLER =====
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    data = call.data
-    user_id = call.from_user.id
-    if "_" not in data:
-        return
-    action, post_id = data.split("_")
-    post_id = int(post_id)
-    post = post_messages.get(post_id)
-    if not post:
-        bot.answer_callback_query(call.id, "Post tidak tersedia")
-        return
-    group = FEED_GROUP if post["type"]=="feed" else DATING_GROUP
+    finally:
+        # Bersihkan task saat shutdown
+        if daily_task:
+            daily_task.cancel()
+        if referral_task:
+            referral_task.cancel()
+        await bot.session.close()
 
-    if action=="like":
-        if user_id not in post["likes"]:
-            post["likes"].append(user_id)
-            bot.answer_callback_query(call.id, "❤️ Like tercatat!")
-            bot.send_message(group, f"❤️ User {user_id} menyukai post ini!")
-        else:
-            bot.answer_callback_query(call.id, "⚠️ Kamu sudah like sebelumnya.")
-
-    elif action=="comment":
-        user_state[user_id] = f"comment_{post_id}"
-        bot.answer_callback_query(call.id, "💬 Silakan kirim komentar kamu.")
-
-    elif action=="next":
-        bot.answer_callback_query(call.id, "➡️ Swipe ke post berikutnya!")
-
-# ===== HANDLE COMMENTS =====
-@bot.message_handler(func=lambda m: user_state.get(m.chat.id,"").startswith("comment_"))
-def handle_comment(message):
-    user_id = message.chat.id
-    state = user_state[user_id]
-    post_id = int(state.split("_")[1])
-    post = post_messages.get(post_id)
-    if post:
-        post["comments"].append((user_id, message.text))
-        group = FEED_GROUP if post["type"]=="feed
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot Berhenti Secara Aman.")
