@@ -85,6 +85,16 @@ async def schedule_daily_reset(db: DatabaseService):
         except Exception as e:
             logging.error(f"❌ Maintenance Error: {e}")
 
+async def set_main_menu(bot: Bot):
+    commands = [
+        BotCommand(command="dashboard", description="🏠 Halaman Utama"),
+        BotCommand(command="feed", description="📸 Lihat Feed & Update"),
+        BotCommand(command="discovery", description="🔍 Cari Teman Baru"),
+        BotCommand(command="inbox", description="💬 Pesan & Obrolan"),
+        BotCommand(command="status", description="✨ Cek Status & Poin")
+    ]
+    await bot.set_my_commands(commands)
+    
 async def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -167,6 +177,7 @@ async def main():
         daily_task = asyncio.create_task(schedule_daily_reset(db))
 
         await bot.delete_webhook(drop_pending_updates=True)
+        await set_main_menu(bot)
         print("🚀 Bot PickMe Aktif & Tahan Banting (WIB)!")
         await dp.start_polling(bot)
 
