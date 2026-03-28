@@ -139,17 +139,18 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
         await state.clear()
         
         # Bersihkan pesan input user
-        try: 
-            await message.delete()
-        except Exception: 
-            pass
+        try: await message.delete()
+        except Exception: pass
         
         # Sapu bersih semua chat bubble di layar
         for msg_id in sweep_list:
-            try: 
-                await bot.delete_message(chat_id=user_id, message_id=msg_id)
-            except Exception: 
-                pass
+            try: await bot.delete_message(chat_id=user_id, message_id=msg_id)
+            except Exception: pass
+        
+        # FIX: Panggil ulang Global Keyboard Navigasi agar kembali muncul di bawah layar
+        from utils.ui_manager import UIManager
+        global_nav = UIManager.get_global_nav_keyboard()
+        await message.answer("🚪 <i>Keluar dari ruang obrolan...</i>", reply_markup=global_nav, parse_mode="HTML")
         
         # Arahkan kembali ke UI Inbox yang bersih
         from handlers.inbox import render_inbox_ui
