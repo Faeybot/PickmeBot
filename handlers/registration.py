@@ -21,7 +21,6 @@ geolocator = Nominatim(user_agent="pickme_bot_v6_final")
 def get_clean_id(key: str):
     val = os.getenv(key)
     if not val:
-        logging.error(f"⚠️ Variabel {key} KOSONG di Railway!")
         return None
     val = str(val).strip().replace("'", "").replace('"', '')
     if val.startswith("-") or val.isdigit():
@@ -31,14 +30,14 @@ def get_clean_id(key: str):
     return val
 
 ADMIN_LOG_CHANNEL = get_clean_id("ADMIN_LOG_CHANNEL") 
-REG_MODERATION_GROUP = get_clean_id("REG_MODERATION_GROUP") # Grup khusus klik Approve/Reject
+REG_MODERATION_GROUP = get_clean_id("REG_MODERATION_GROUP") 
 GROUP_ID = get_clean_id("GROUP_ID")
 CHANNEL_ID = get_clean_id("CHANNEL_ID")
 
 GROUP_LINK = os.getenv("GROUP_LINK", "").replace("@", "").replace("https://t.me/", "")
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "").replace("@", "").replace("https://t.me/", "")
 BANNER_PHOTO_ID = os.getenv("BANNER_PHOTO_ID", "AgACAgUAAxkBAAIKUmm-3V96dh0wXlEwKgR9cZYxQJ7IAAJWEWsb5Sz5VRdAhJBTFWieAQADAgADeAADOgQ")
-DEFAULT_ANON_PHOTO_ID = os.getenv("DEFAULT_ANON_PHOTO_ID", BANNER_PHOTO_ID) # Nanti isi dengan ID Foto Logo Anonim PickMe
+DEFAULT_ANON_PHOTO_ID = os.getenv("DEFAULT_ANON_PHOTO_ID", BANNER_PHOTO_ID)
 
 # --- DAFTAR 15 KOTA BARU ---
 CITY_DATA = {
@@ -346,7 +345,7 @@ async def finish_reg(message: types.Message, state: FSMContext, db: DatabaseServ
     referrer_id = data.get('referrer_id')
     poin_awal = 1000 if referrer_id else 0
 
-    # Ekstraksi DOB untuk database
+    # FIX: Penambahan variabel birth_date untuk object User
     try: dob_db = datetime.datetime.strptime(data['dob_str'], "%Y-%m-%d")
     except: dob_db = None
 
@@ -354,13 +353,13 @@ async def finish_reg(message: types.Message, state: FSMContext, db: DatabaseServ
         async with db.session_factory() as session:
             new_user = User(
                 id=user_id, full_name=data['nickname'], age=data['age'],
+                birth_date=dob_db, # <- FIX ADA DI SINI
                 gender=data['gender'], interests=interests_str, 
                 latitude=data['latitude'], longitude=data['longitude'],
                 location_name=data['city'], city_hashtag=data['city_hashtag'],
                 bio=message.text, photo_id=data['photo_1'], extra_photos=extra_photos,
                 daily_feed_text_quota=3, daily_feed_photo_quota=1, poin_balance=poin_awal
             )
-            # Nanti setelah update database, kita tambahkan birth_date=dob_db ke atas
             session.add(new_user)
             
             if referrer_id:
@@ -394,6 +393,8 @@ async def finish_reg(message: types.Message, state: FSMContext, db: DatabaseServ
         except: pass
 
         await state.clear()
+        
+        # Eksekusi Seamless Navigation ke Dashboard
         from handlers.start import command_start_handler, get_main_menu
         from collections import namedtuple
         await message.answer("🎉 Pendaftaran Berhasil!", reply_markup=get_main_menu())
@@ -408,7 +409,6 @@ async def finish_reg(message: types.Message, state: FSMContext, db: DatabaseServ
 # ==========================================
 @router.callback_query(F.data.startswith("mod_approve_"))
 async def handle_mod_approve(callback: types.CallbackQuery):
-    # Ubah pesan untuk menghapus tombol dan beri tanda approved
     admin_name = callback.from_user.first_name
     new_caption = f"{callback.message.caption}\n\n✅ <b>APPROVED</b> oleh {admin_name}"
     await callback.message.edit_caption(caption=new_caption, parse_mode="HTML")
@@ -419,14 +419,12 @@ async def handle_mod_reject(callback: types.CallbackQuery, db: DatabaseService, 
     user_id = int(callback.data.split("_")[2])
     admin_name = callback.from_user.first_name
     
-    # 1. Reset foto ke default anonim di Database
     async with db.session_factory() as session:
         user = await session.get(User, user_id)
         if user:
             user.photo_id = DEFAULT_ANON_PHOTO_ID
             await session.commit()
             
-    # 2. Kirim pesan peringatan ke user
     warn_msg = (
         "⚠️ <b>PERINGATAN KOMUNITAS</b>\n\n"
         "Foto profil kamu telah <b>ditolak/dihapus</b> oleh Admin karena melanggar aturan "
@@ -437,7 +435,6 @@ async def handle_mod_reject(callback: types.CallbackQuery, db: DatabaseService, 
     try: await bot.send_message(user_id, warn_msg, parse_mode="HTML")
     except: pass
 
-    # 3. Update pesan di grup moderasi
     new_caption = f"{callback.message.caption}\n\n❌ <b>REJECTED & RESET</b> oleh {admin_name}"
     await callback.message.edit_caption(caption=new_caption, parse_mode="HTML")
     await callback.answer("Foto ditolak dan profil direset!", show_alert=True)
