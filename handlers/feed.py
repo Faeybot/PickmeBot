@@ -37,7 +37,7 @@ INTEREST_MAP = {
 }
 
 # ==========================================
-# 2. FORMATTER POSTINGAN (Dengan Deep Link)
+# 2. FORMATTER POSTINGAN
 # ==========================================
 def format_feed_post(user: User, caption: str, is_anon: bool, bot_username: str):
     name_header = "🎭 <b>ANONIM</b>" if is_anon else f"👤 <b>{user.full_name.upper()}</b>"
@@ -59,12 +59,10 @@ def format_feed_post(user: User, caption: str, is_anon: bool, bot_username: str)
 # 3. CORE UI RENDERER: FEED
 # ==========================================
 async def render_feed_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseService, state: FSMContext, callback_id: str = None):
-    """ Fungsi terpusat untuk menampilkan UI Feed dengan mode SPA """
     await state.clear()
     user = await db.get_user(user_id)
     if not user: return False
 
-    # Tambahkan ke history navigasi
     await db.push_nav(user_id, "feed")
         
     text = (
@@ -80,12 +78,13 @@ async def render_feed_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseServi
     )
     
     ch_user = CHANNEL_USERNAME.replace('@','').strip() if CHANNEL_USERNAME else ""
+    
+    # ❌ TOMBOL BACK/KEMBALI DIHAPUS DARI SINI
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 TULIS TEKS", callback_data="feed_ask_text"), 
          InlineKeyboardButton(text="📸 POSTING FOTO", callback_data="feed_ask_photo")],
         [InlineKeyboardButton(text="🚀 BOOSTER POSTINGAN", callback_data="menu_boost")],
-        [InlineKeyboardButton(text="📺 PREVIEW CHANNEL", url=f"https://t.me/{ch_user}")],
-        [InlineKeyboardButton(text="🔙 DASHBOARD SAYA", callback_data="back_to_dashboard")]
+        [InlineKeyboardButton(text="📺 PREVIEW CHANNEL", url=f"https://t.me/{ch_user}")]
     ])
     
     media = InputMediaPhoto(media=BANNER_PHOTO_ID, caption=text, parse_mode="HTML")
@@ -132,8 +131,8 @@ async def feed_ask_text(callback: types.CallbackQuery, state: FSMContext, db: Da
     if user.daily_feed_text_quota <= 0 and user.extra_feed_text_quota <= 0:
         return await callback.answer("❌ Kuota Teks Anda habis! Tunggu reset besok.", show_alert=True)
         
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ BATAL", callback_data="menu_feed")]])
-    await callback.message.edit_caption(caption="📝 <b>Silakan ketik pesan/status yang ingin kamu posting:</b>", reply_markup=kb, parse_mode="HTML")
+    # ❌ TOMBOL BATAL DIHAPUS. User bisa tekan "Kembali" di keyboard bawah jika ingin batal.
+    await callback.message.edit_caption(caption="📝 <b>Silakan ketik pesan/status yang ingin kamu posting:</b>", reply_markup=None, parse_mode="HTML")
     await state.set_state(FeedState.waiting_text)
     await callback.answer()
 
@@ -162,8 +161,8 @@ async def feed_ask_photo(callback: types.CallbackQuery, state: FSMContext, db: D
     if user.daily_feed_photo_quota <= 0 and user.extra_feed_photo_quota <= 0:
         return await callback.answer("❌ Kuota Foto Anda habis! Tunggu reset besok.", show_alert=True)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ BATAL", callback_data="menu_feed")]])
-    await callback.message.edit_caption(caption="📸 <b>Kirim Foto berserta caption/keterangannya:</b>", reply_markup=kb, parse_mode="HTML")
+    # ❌ TOMBOL BATAL DIHAPUS. 
+    await callback.message.edit_caption(caption="📸 <b>Kirim Foto berserta caption/keterangannya:</b>", reply_markup=None, parse_mode="HTML")
     await state.set_state(FeedState.waiting_photo)
     await callback.answer()
 
@@ -190,13 +189,12 @@ async def handle_photo_input(message: types.Message, state: FSMContext, db: Data
 # 6. PEMILIHAN ANONIM & EKSEKUSI
 # ==========================================
 async def ask_anon_choice(user: User, state: FSMContext, bot: Bot, chat_id: int):
-    # Menggunakan anchor_msg_id dari database, bukan state
     anchor_id = user.anchor_msg_id
     
+    # ❌ TOMBOL BATAL DIHAPUS DARI SINI
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 PUBLIK", callback_data="anon_no"), 
-         InlineKeyboardButton(text="🎭 ANONIM", callback_data="anon_yes")],
-        [InlineKeyboardButton(text="❌ BATAL", callback_data="menu_feed")]
+         InlineKeyboardButton(text="🎭 ANONIM", callback_data="anon_yes")]
     ])
     
     text = "Bagaimana postingan ini ingin ditampilkan di Channel?"
@@ -212,7 +210,7 @@ async def ask_anon_choice(user: User, state: FSMContext, bot: Bot, chat_id: int)
 async def process_publish(callback: types.CallbackQuery, state: FSMContext, db: DatabaseService, bot: Bot):
     is_anon = (callback.data == "anon_yes")
     data = await state.get_data()
-    user_id = callback.from_user.id
+    user_id = callback.fromuser.id
     caption = data.get('f_caption', "")
     post_type = data.get('f_type')
     bot_info = await bot.get_me()
@@ -241,12 +239,11 @@ async def process_publish(callback: types.CallbackQuery, state: FSMContext, db: 
                 used_quota_type = "extra_photo"
         await session.commit()
 
-        kb_back = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 KEMBALI KE FEED", callback_data="menu_feed")]])
-
+        # ❌ TOMBOL KEMBALI DIHAPUS. Set reply_markup ke None.
         if post_type == "text":
             full_post = format_feed_post(user, caption, is_anon, bot_info.username)
             await bot.send_message(FEED_CHANNEL_ID, full_post, parse_mode="HTML", disable_web_page_preview=True)
-            await callback.message.edit_caption(caption="✅ <b>Postingan teks berhasil diterbitkan!</b>", reply_markup=kb_back, parse_mode="HTML")
+            await callback.message.edit_caption(caption="✅ <b>Postingan teks berhasil diterbitkan!</b>\n\n<i>Kamu bisa melanjutkan navigasi melalui menu di bawah.</i>", reply_markup=None, parse_mode="HTML")
             await state.clear()
         else:
             anon_tag = "1" if is_anon else "0"
@@ -257,7 +254,7 @@ async def process_publish(callback: types.CallbackQuery, state: FSMContext, db: 
             admin_text = f"📸 <b>REVIEW FOTO FEED</b>\n👤 Pembuat: {user.full_name}\n🎭 Tampil: <b>{'ANON' if is_anon else 'PUBLIK'}</b>\n📝 <b>Caption:</b>\n{html.escape(caption)}"
             
             await bot.send_photo(ADMIN_FEED_GROUP_ID, photo=data['f_file_id'], caption=admin_text, reply_markup=kb_admin, parse_mode="HTML")
-            await callback.message.edit_caption(caption="⏳ <b>Postingan foto sedang dalam tinjauan Admin.</b>\nJika ditolak, kuota akan dikembalikan.", reply_markup=kb_back, parse_mode="HTML")
+            await callback.message.edit_caption(caption="⏳ <b>Postingan foto sedang dalam tinjauan Admin.</b>\nJika ditolak, kuota akan dikembalikan.\n\n<i>Gunakan menu di bawah untuk kembali.</i>", reply_markup=None, parse_mode="HTML")
             await state.clear()
     await callback.answer()
 
