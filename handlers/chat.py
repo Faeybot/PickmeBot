@@ -109,13 +109,14 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
 
     # 6. LOAD HISTORY DARI CHANNEL/GROUP (Restoration)
     if session_data and getattr(session_data, 'channel_msg_ids', []):
-        for msg_id in session_data.channel_msg_ids:
+    # Ambil maksimal 20 pesan terakhir saja agar tidak kena limit Telegram
+        recent_msgs = session_data.channel_msg_ids[-20:] 
+        for msg_id in recent_msgs:
             if CHAT_LOG_GROUP_ID:
                 try:
-                    # Menggunakan copy_message agar pesan tampil seperti asli dari bot
                     copied = await bot.copy_message(chat_id=user_id, from_chat_id=CHAT_LOG_GROUP_ID, message_id=msg_id)
                     sweep.append(copied.message_id)
-                except: pass
+                    except: pass                 
         await state.update_data(sweep_list=sweep)
     
     await callback.answer()
