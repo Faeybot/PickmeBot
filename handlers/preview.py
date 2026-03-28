@@ -12,7 +12,6 @@ router = Router()
 
 BANNER_PHOTO_ID = os.getenv("BANNER_PHOTO_ID", "AgACAgUAAxkBAAIKUmm-3V96dh0wXlEwKgR9cZYxQJ7IAAJWEWsb5Sz5VRdAhJBTFWieAQADAgADeAADOgQ")
 
-# FIX 1: Pindahkan Dictionary ke sini agar tidak terjadi Circular Import dengan start.py
 INTEREST_LABELS = {
     "int_adult": "🔞 Adult Content", "int_flirt": "🔥 Flirt & Dirty Talk", "int_rel": "❤️ Relationship",
     "int_net": "🤝 Networking", "int_game": "🎮 Gaming", "int_travel": "✈️ Traveling", "int_coffee": "☕ Coffee & Chill"
@@ -47,13 +46,17 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
 
     mapping_db = {"like": "LIKE", "view": "VIEW", "unmask": "UNMASK_CHAT", "inbox": "CHAT", "match": "MATCH"}
     db_type = mapping_db.get(context_source)
-    if db_type:
-        await getattr(db, 'mark_notif_read', lambda u, s, t: None)(viewer_id, target_id, db_type)
+    
+    # FIX: Pengecekan Aman (Safe Call) untuk Notif
+    if db_type and hasattr(db, 'mark_notif_read'):
+        await db.mark_notif_read(viewer_id, target_id, db_type)
 
+    # FIX: Perbaikan Fatal Bug TypeError saat mengecek Timestamp vs Object
     has_active_session = False
-    active_expiry = await getattr(db, 'get_active_chat_session', lambda u, t: None)(viewer_id, target_id)
-    if active_expiry and active_expiry > datetime.datetime.now().timestamp():
-        has_active_session = True
+    if hasattr(db, 'get_active_chat_session'):
+        session_data = await db.get_active_chat_session(viewer_id, target_id)
+        if session_data and session_data.expires_at > int(datetime.datetime.now().timestamp()):
+            has_active_session = True
 
     # ---------------------------------------------------
     # LOGIKA UNMASK (BONGKAR ANONIM)
@@ -84,7 +87,9 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
                 return False
             
             expiry_48h = int((datetime.datetime.now() + datetime.timedelta(hours=48)).timestamp())
-            await getattr(db, 'upsert_chat_session', lambda u, t, e: None)(viewer_id, target_id, expiry_48h)
+            if hasattr(db, 'upsert_chat_session'):
+                await db.upsert_chat_session(viewer_id, target_id, expiry_48h)
+                
             await db.add_points_with_log(target_id, 500, f"Unmask_Kompensasi_Awal_{viewer_id}_{target_id}_{expiry_48h}")
             await notif_service.trigger_unmask(target_id, viewer_id)
             is_unmasked_anon = True
@@ -151,7 +156,6 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
     # ==========================================
     target_kasta = "💎 VIP+" if target.is_vip_plus else "🌟 VIP" if target.is_vip else "🎭 PREMIUM" if target.is_premium else "👤 FREE"
     
-    # FIX: Render minat menggunakan dictionary lokal
     minat_list = [INTEREST_LABELS.get(i.strip(), i.strip()) for i in (target.interests or "").split(",")]
     minat = ", ".join(minat_list) if target.interests else "-"
 
@@ -206,7 +210,6 @@ async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: i
     media = InputMediaPhoto(media=target.photo_id, caption=text_full, parse_mode="HTML")
     anchor_id = viewer.anchor_msg_id
     
-    # FIX SPA: Jika gagal edit, JANGAN diam saja. Kirim ulang anchor baru!
     try: 
         await bot.edit_message_media(chat_id=chat_id, message_id=anchor_id, media=media, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons))
     except Exception: 
