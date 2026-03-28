@@ -13,10 +13,9 @@ router = Router()
 BANNER_PHOTO_ID = os.getenv("BANNER_PHOTO_ID", "AgACAgUAAxkBAAIKUmm-3V96dh0wXlEwKgR9cZYxQJ7IAAJWEWsb5Sz5VRdAhJBTFWieAQADAgADeAADOgQ")
 
 # ==========================================
-# 1. MESIN UTAMA PENAMPIL PROFIL (Universal)
+# 1. CORE UI RENDERER: PROFILE PREVIEW
 # ==========================================
-async def process_profile_preview(message: types.Message, bot: Bot, db: DatabaseService, viewer_id: int, target_id: int, context_source: str):
-    
+async def render_preview_ui(bot: Bot, chat_id: int, viewer_id: int, target_id: int, context_source: str, db: DatabaseService):
     viewer = await db.get_user(viewer_id)
     target = await db.get_user(target_id)
     notif_service = NotificationService(bot, db)
@@ -25,9 +24,14 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
     await db.push_nav(viewer_id, f"preview_{target_id}_{context_source}")
 
     if not target:
-        return await message.answer("❌ Profil tidak ditemukan atau user telah menghapus akunnya.")
+        try: await bot.send_message(chat_id, "❌ Profil tidak ditemukan atau user telah menghapus akunnya.")
+        except: pass
+        return False
+        
     if viewer_id == target_id:
-        return await message.answer("👋 Ini adalah link profil kamu sendiri. Gunakan tombol 'Profil Saya' di Dashboard.")
+        try: await bot.send_message(chat_id, "👋 Ini adalah link profil kamu sendiri. Gunakan tombol 'Profil Saya' di Dashboard.")
+        except: pass
+        return False
 
     is_sultan = (viewer.is_vip or viewer.is_vip_plus)
     is_unmasked_anon = False
@@ -43,15 +47,19 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
         has_active_session = True
 
     # ---------------------------------------------------
+    # LOGIKA UNMASK (BONGKAR ANONIM)
+    # ---------------------------------------------------
     if context_source == "anon":
         if not viewer.is_vip_plus:
-            return await show_locked_anon_profile(message, target, viewer)
+            return await render_locked_anon_ui(bot, chat_id, target, viewer)
         
         if has_active_session:
             is_unmasked_anon = True
         else:
             quota_unmask = getattr(viewer, 'daily_unmask_quota', 0)
             if quota_unmask is None: quota_unmask = 0
+            
+            # Reset kuota harian jika belum ada
             if quota_unmask <= 0:
                 async with db.session_factory() as session:
                     v_db = await session.get(User, viewer_id)
@@ -61,7 +69,9 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
 
             success = await db.use_unmask_anon_quota(viewer_id)
             if not success:
-                return await message.answer("❌ Kuota Harian 'Bongkar Anonim' kamu sudah habis! Tunggu reset besok.")
+                try: await bot.send_message(chat_id, "❌ Kuota Harian 'Bongkar Anonim' kamu sudah habis! Tunggu reset besok.")
+                except: pass
+                return False
             
             expiry_48h = int((datetime.datetime.now() + datetime.timedelta(hours=48)).timestamp())
             await getattr(db, 'upsert_chat_session', lambda u, t, e: None)(viewer_id, target_id, expiry_48h)
@@ -70,9 +80,11 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
             is_unmasked_anon = True
 
     # ---------------------------------------------------
+    # LOGIKA PUBLIC (INTIP PROFIL FEED/DISCOVERY)
+    # ---------------------------------------------------
     elif context_source == "public":
         if not is_sultan:
-            return await show_upgrade_block(message, target.full_name, viewer)
+            return await render_upgrade_block_ui(bot, chat_id, target.full_name, viewer)
         
         if has_active_session:
             pass
@@ -90,7 +102,9 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
             if is_new_view:
                 success = await db.use_unmask_quota(viewer_id) 
                 if not success:
-                    return await message.answer("❌ Kuota Harian 'Buka Profil' kamu sudah habis! Tunggu reset besok.")
+                    try: await bot.send_message(chat_id, "❌ Kuota Harian 'Buka Profil' kamu sudah habis! Tunggu reset besok.")
+                    except: pass
+                    return False
                 
                 async with db.session_factory() as session:
                     t_db = await session.get(User, target_id)
@@ -102,22 +116,24 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
                 await notif_service.trigger_view(target_id, viewer_id)
 
     # ---------------------------------------------------
+    # LOGIKA NOTIF (VIEW/LIKE)
+    # ---------------------------------------------------
     elif context_source in ["like", "view", "notif"]:
         if not is_sultan:
-            return await show_upgrade_block(message, target.full_name, viewer)
+            return await render_upgrade_block_ui(bot, chat_id, target.full_name, viewer)
         else:
             if context_source in ["view", "notif"] and not has_active_session:
                 await notif_service.trigger_view(target_id, viewer_id)
 
-    # ---------------------------------------------------
     elif context_source in ["match", "unmask", "inbox"]:
         pass 
-        
     else:
-        return await message.answer("❌ Akses tidak valid.")
+        try: await bot.send_message(chat_id, "❌ Akses tidak valid.")
+        except: pass
+        return False
 
     # ==========================================
-    # RENDER UI PROFIL LENGKAP (MODE SPA)
+    # PEMBENTUKAN TAMPILAN (UI)
     # ==========================================
     target_kasta = "💎 VIP+" if target.is_vip_plus else "🌟 VIP" if target.is_vip else "🎭 PREMIUM" if target.is_premium else "👤 FREE"
     
@@ -153,10 +169,11 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
 
     kb_buttons = []
     
+    # FIX: Semua awalan callback chat diubah menjadi "chat_" agar terhubung ke chat.py
     if is_unmasked_anon:
-        kb_buttons.append([InlineKeyboardButton(text="✍️ KIRIM PESAN", callback_data=f"unmaskchat_{target_id}_initiator")])
+        kb_buttons.append([InlineKeyboardButton(text="✍️ KIRIM PESAN", callback_data=f"chat_{target_id}_unmask")])
     elif context_source == "unmask":
-        kb_buttons.append([InlineKeyboardButton(text="✍️ BALAS PESAN (+500 Poin)", callback_data=f"unmaskchat_{target_id}_target")])
+        kb_buttons.append([InlineKeyboardButton(text="✍️ BALAS PESAN (+500 Poin)", callback_data=f"chat_{target_id}_unmask")])
     elif context_source == "inbox":
         kb_buttons.append([InlineKeyboardButton(text="💬 BALAS PESAN (+200 Poin)", callback_data=f"chat_{target_id}_inbox")])
     elif context_source == "match":
@@ -172,25 +189,22 @@ async def process_profile_preview(message: types.Message, bot: Bot, db: Database
         else:
             kb_buttons.append([InlineKeyboardButton(text="💎 UPGRADE UNTUK CHAT", callback_data="menu_pricing")])
             
-    # ❌ TOMBOL BACK/DASHBOARD DIHAPUS. UI Tetap bersih.
 
     media = InputMediaPhoto(media=target.photo_id, caption=text_full, parse_mode="HTML")
     anchor_id = viewer.anchor_msg_id
     
+    # SPA UPDATE (Anti Deep Link Crash)
     try: 
-        await bot.edit_message_media(chat_id=message.chat.id, message_id=anchor_id, media=media, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons))
+        await bot.edit_message_media(chat_id=chat_id, message_id=anchor_id, media=media, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons))
     except Exception: 
-        try:
-            # Gunakan send_photo ke pesan jangkar baru jika gagal
-            sent = await message.answer_photo(photo=target.photo_id, caption=text_full, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons), parse_mode="HTML")
-            await db.update_anchor_msg(viewer_id, sent.message_id)
-        except: pass
-
+        pass
+    
+    return True
 
 # ==========================================
-# 2. FUNGSI BLOKIR SAJA
+# 2. RENDERER PEMBLOKIR AKSES
 # ==========================================
-async def show_upgrade_block(message: types.Message, target_name: str, viewer: User):
+async def render_upgrade_block_ui(bot: Bot, chat_id: int, target_name: str, viewer: User):
     name_safe = html.escape(target_name[:3]) if target_name else "Ano"
     text_lock = (
         f"🔒 <b>PROFIL TERKUNCI</b>\n"
@@ -198,16 +212,13 @@ async def show_upgrade_block(message: types.Message, target_name: str, viewer: U
         f"Profil <b>{name_safe}***</b> hanya bisa dilihat oleh Member <b>VIP / VIP+</b>.\n\n"
         f"<i>Upgrade akunmu sekarang untuk bisa melihat profil lengkap, membuka fitur chat, dan bebas kuota preview!</i>"
     )
-    # ❌ TOMBOL KEMBALI DIHAPUS
-    kb_lock = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 UPGRADE VIP SEKARANG", callback_data="menu_pricing")]
-    ])
-    
+    kb_lock = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 UPGRADE VIP SEKARANG", callback_data="menu_pricing")]])
     media = InputMediaPhoto(media=BANNER_PHOTO_ID, caption=text_lock, parse_mode="HTML")
-    try: await message.bot.edit_message_media(chat_id=message.chat.id, message_id=viewer.anchor_msg_id, media=media, reply_markup=kb_lock)
+    try: await bot.edit_message_media(chat_id=chat_id, message_id=viewer.anchor_msg_id, media=media, reply_markup=kb_lock)
     except: pass
+    return True
 
-async def show_locked_anon_profile(message: types.Message, target: User, viewer: User):
+async def render_locked_anon_ui(bot: Bot, chat_id: int, target: User, viewer: User):
     loc_safe = html.escape(target.location_name) if target.location_name else "Suatu Tempat"
     text_anon = (
         f"🎭 <b>POSTINGAN ANONIM</b>\n"
@@ -215,18 +226,22 @@ async def show_locked_anon_profile(message: types.Message, target: User, viewer:
         f"Seseorang di <b>{loc_safe}</b> memposting ini.\n"
         f"Identitasnya disembunyikan dan hanya bisa dibongkar oleh Sultan <b>VIP+</b>."
     )
-    
-    # ❌ TOMBOL KEMBALI DIHAPUS
-    kb_anon = [
-        [InlineKeyboardButton(text="💎 UPGRADE VIP+ UNTUK BONGKAR", callback_data="menu_pricing")]
-    ]
+    kb_anon = [[InlineKeyboardButton(text="💎 UPGRADE VIP+ UNTUK BONGKAR", callback_data="menu_pricing")]]
     media = InputMediaPhoto(media=BANNER_PHOTO_ID, caption=text_anon, parse_mode="HTML")
-    try: await message.bot.edit_message_media(chat_id=message.chat.id, message_id=viewer.anchor_msg_id, media=media, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_anon))
+    try: await bot.edit_message_media(chat_id=chat_id, message_id=viewer.anchor_msg_id, media=media, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_anon))
     except: pass
-
+    return True
 
 # ==========================================
-# 3. HANDLER AKSI (LIKE & DISLIKE DARI PREVIEW)
+# 3. GATEWAY HANDLER (Dari Callback & Deep Link)
+# ==========================================
+async def process_profile_preview(message_or_callback: types.Message | types.CallbackQuery, bot: Bot, db: DatabaseService, viewer_id: int, target_id: int, context_source: str):
+    """Fungsi pembungkus agar bisa dipanggil dari CallbackQuery atau deep link Message"""
+    chat_id = message_or_callback.chat.id if isinstance(message_or_callback, types.Message) else message_or_callback.message.chat.id
+    await render_preview_ui(bot, chat_id, viewer_id, target_id, context_source, db)
+
+# ==========================================
+# 4. HANDLER AKSI (LIKE & DISLIKE DARI PREVIEW)
 # ==========================================
 @router.callback_query(F.data.startswith("action_like_"))
 async def handle_notif_like(callback: types.CallbackQuery, db: DatabaseService, bot: Bot):
