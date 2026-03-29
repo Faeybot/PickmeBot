@@ -4,7 +4,7 @@ import logging
 import asyncio
 from aiogram import Router, F, types, Bot
 from aiogram.fsm.context import FSMContext
-from aiogram.filters import Command, CommandStart, CommandObject
+from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import InputMediaPhoto
 
 from services.database import DatabaseService, User
@@ -32,9 +32,7 @@ def get_readable_interests(interests_str: str) -> str:
 async def render_dashboard_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseService, state: FSMContext, callback_id: str = None, force_new: bool = False):
     await state.clear()
     user = await db.get_user(user_id)
-    
-    if not user:
-        return False
+    if not user: return False
 
     await db.push_nav(user_id, "dashboard")
 
@@ -59,29 +57,19 @@ async def render_dashboard_ui(bot: Bot, chat_id: int, user_id: int, db: Database
     success_edit = False
     anchor_id = user.anchor_msg_id
 
-    # FIX: Coba Edit Pesan Jangkar HANYA JIKA tidak dipaksa buat baru
     if anchor_id and not force_new:
         try:
             await bot.edit_message_media(chat_id=chat_id, message_id=anchor_id, media=media, reply_markup=inline_kb)
             success_edit = True
-        except Exception as e:
-            pass 
+        except Exception: pass 
 
-    # Fallback: Jika gagal edit atau dipaksa kirim baru (force_new = True)
     if not success_edit:
         try:
             if anchor_id:
                 try: await bot.delete_message(chat_id=chat_id, message_id=anchor_id)
                 except: pass
                 
-            try:
-                from aiogram.types import ReplyKeyboardRemove
-                sweep_msg = await bot.send_message(chat_id, "🔄", reply_markup=ReplyKeyboardRemove())
-                await bot.delete_message(chat_id, sweep_msg.message_id)
-            except: pass
-
             global_nav = UIManager.get_global_nav_keyboard()
-            
             await bot.send_message(
                 chat_id, 
                 "🟢 <b>Sistem Navigasi Aktif</b>\n<i>Gunakan tombol di bawah layar untuk kembali ke menu sebelumnya.</i>", 
@@ -89,10 +77,7 @@ async def render_dashboard_ui(bot: Bot, chat_id: int, user_id: int, db: Database
                 parse_mode="HTML"
             )
             
-            sent_message = await bot.send_photo(
-                chat_id=chat_id, photo=BANNER_PHOTO_ID, 
-                caption=dashboard_text, reply_markup=inline_kb, parse_mode="HTML"
-            )
+            sent_message = await bot.send_photo(chat_id=chat_id, photo=BANNER_PHOTO_ID, caption=dashboard_text, reply_markup=inline_kb, parse_mode="HTML")
             await db.update_anchor_msg(user_id, sent_message.message_id)
         except Exception as e:
             logging.error(f"Gagal mengirim ulang Dashboard UI: {e}")
@@ -114,25 +99,18 @@ async def command_start_handler(message: types.Message, command: CommandObject =
     user_id = message.from_user.id 
     chat_id = message.chat.id
 
-    # Hapus pesan /start dari user agar layar tetap bersih
     try: await message.delete()
     except: pass
 
-    # --- A. GATEKEEPER ---
     from handlers.registration import check_membership, CHANNEL_LINK, GROUP_LINK
     
     is_joined = await check_membership(bot, user_id)
     if not is_joined:
-        text_stop = (
-            "<b>STOP! Join Dulu ya Guys!!!</b> ✋\n\n"
-            "Untuk menjaga kualitas komunitas, kamu wajib bergabung di Channel dan Grup kami sebelum bisa beraksi.\n\n"
-            "<i>Silakan bergabung kembali melalui tombol di bawah:</i>"
-        )
+        text_stop = "<b>STOP! Join Dulu ya Guys!!!</b> ✋\n\nUntuk menjaga kualitas komunitas, kamu wajib bergabung di Channel dan Grup kami sebelum bisa beraksi.\n\n<i>Silakan bergabung kembali melalui tombol di bawah:</i>"
         return await message.answer_photo(photo=BANNER_PHOTO_ID, caption=text_stop, reply_markup=UIManager.get_join_gate_kb(CHANNEL_LINK, GROUP_LINK), parse_mode="HTML")
 
     user = await db.get_user(user_id)
     
-    # --- B. USER BARU: Arahkan ke Registrasi ---
     if not user:
         if state: await state.clear()
         from handlers.registration import RegState
@@ -140,7 +118,6 @@ async def command_start_handler(message: types.Message, command: CommandObject =
         await message.answer(text_new, parse_mode="HTML", reply_markup=types.ReplyKeyboardRemove())
         return await state.set_state(RegState.waiting_nickname)
 
-    # --- C. ROUTER DEEP LINK ---
     if args and args.startswith("view_"):
         parts = args.split("_")
         try: 
@@ -154,11 +131,8 @@ async def command_start_handler(message: types.Message, command: CommandObject =
             await asyncio.sleep(3)
             try: await err_msg.delete()
             except: pass
-            # Fallthrough: Biarkan lanjut ke render_dashboard_ui dengan force_new=True
 
-    # --- D. TAMPILKAN DASHBOARD UTAMA (FORCE NEW JIKA DARI /START) ---
     await render_dashboard_ui(bot, chat_id, user_id, db, state, force_new=True)
-
 
 # ==========================================
 # 3. HANDLER CALLBACK (Gatekeeper & Navigasi)
@@ -179,33 +153,33 @@ async def back_to_dashboard_callback(callback: types.CallbackQuery, db: Database
     if not success:
         await callback.answer("❌ Sesi berakhir. Ketik /start kembali.", show_alert=True)
 
-
 # ==========================================
-# 4. HANDLER NAVIGASI BAWAH (ReplyKeyboard)
+# 4. HANDLER NAVIGASI BAWAH (ANTI HILANG)
 # ==========================================
 @router.message(F.text == "⬅️ Kembali")
 async def handle_back_button(message: types.Message, db: DatabaseService, bot: Bot, state: FSMContext):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
+    # Deteksi apakah user butuh pemulihan keyboard (misal habis dari GPS)
+    current_state = await state.get_state() if state else None
+    was_in_gps = current_state and ("location" in current_state.lower() or "chat" in current_state.lower())
+
     if state: await state.clear()
     try: await message.delete()
     except: pass
     
-    try:
-        from utils.ui_manager import UIManager
-        global_nav = UIManager.get_global_nav_keyboard()
-        temp_msg = await bot.send_message(chat_id, "🔄", reply_markup=global_nav)
-        await bot.delete_message(chat_id, temp_msg.message_id)
-    except:
-        from aiogram.types import ReplyKeyboardRemove
-        temp_msg = await bot.send_message(chat_id, "🔄", reply_markup=ReplyKeyboardRemove())
-        await bot.delete_message(chat_id, temp_msg.message_id)
+    # FIX: Refresh keyboard HANYA jika diperlukan agar tidak ngambek hilang
+    if was_in_gps:
+        try:
+            from utils.ui_manager import UIManager
+            global_nav = UIManager.get_global_nav_keyboard()
+            await bot.send_message(chat_id, "🟢 <i>Navigasi dipulihkan.</i>", reply_markup=global_nav, parse_mode="HTML")
+        except: pass
     
     previous_menu = await db.pop_nav(user_id)
     
-    if previous_menu == "dashboard":
-        await render_dashboard_ui(bot, chat_id, user_id, db, state)
+    if previous_menu == "dashboard": await render_dashboard_ui(bot, chat_id, user_id, db, state)
     elif previous_menu == "feed":
         from handlers.feed import render_feed_ui
         await render_feed_ui(bot, chat_id, user_id, db, state)
@@ -253,6 +227,8 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
         await render_withdraw_ui(bot, chat_id, user_id, db, state)
     else:
         await render_dashboard_ui(bot, chat_id, user_id, db, state)
+
+
 # ==========================================
 # 5. HANDLER MENU BIRU (BOT COMMANDS)
 # ==========================================
@@ -264,28 +240,56 @@ async def cmd_dashboard(message: types.Message, db: DatabaseService, bot: Bot, s
 
 @router.message(Command("feed"))
 async def cmd_feed(message: types.Message, db: DatabaseService, bot: Bot, state: FSMContext):
+    current_state = await state.get_state() if state else None
+    if state: await state.clear()
     try: await message.delete()
     except: pass
+    
+    if current_state and ("location" in current_state.lower() or "chat" in current_state.lower()):
+        from utils.ui_manager import UIManager
+        await bot.send_message(message.chat.id, "🟢 <i>Navigasi dipulihkan.</i>", reply_markup=UIManager.get_global_nav_keyboard(), parse_mode="HTML")
+        
     from handlers.feed import render_feed_ui
     await render_feed_ui(bot, message.chat.id, message.from_user.id, db, state)
 
 @router.message(Command("discovery"))
 async def cmd_discovery(message: types.Message, db: DatabaseService, bot: Bot, state: FSMContext):
+    current_state = await state.get_state() if state else None
+    if state: await state.clear()
     try: await message.delete()
     except: pass
+    
+    if current_state and ("location" in current_state.lower() or "chat" in current_state.lower()):
+        from utils.ui_manager import UIManager
+        await bot.send_message(message.chat.id, "🟢 <i>Navigasi dipulihkan.</i>", reply_markup=UIManager.get_global_nav_keyboard(), parse_mode="HTML")
+        
     from handlers.discovery import render_discovery_ui
     await render_discovery_ui(bot, message.chat.id, message.from_user.id, db, state)
 
 @router.message(Command("inbox"))
 async def cmd_inbox(message: types.Message, db: DatabaseService, bot: Bot, state: FSMContext):
+    current_state = await state.get_state() if state else None
+    if state: await state.clear()
     try: await message.delete()
     except: pass
+    
+    if current_state and ("location" in current_state.lower() or "chat" in current_state.lower()):
+        from utils.ui_manager import UIManager
+        await bot.send_message(message.chat.id, "🟢 <i>Navigasi dipulihkan.</i>", reply_markup=UIManager.get_global_nav_keyboard(), parse_mode="HTML")
+        
     from handlers.inbox import render_inbox_ui
     await render_inbox_ui(bot, message.chat.id, message.from_user.id, db)
 
 @router.message(Command("status"))
 async def cmd_status(message: types.Message, db: DatabaseService, bot: Bot, state: FSMContext):
+    current_state = await state.get_state() if state else None
+    if state: await state.clear()
     try: await message.delete()
     except: pass
+    
+    if current_state and ("location" in current_state.lower() or "chat" in current_state.lower()):
+        from utils.ui_manager import UIManager
+        await bot.send_message(message.chat.id, "🟢 <i>Navigasi dipulihkan.</i>", reply_markup=UIManager.get_global_nav_keyboard(), parse_mode="HTML")
+        
     from handlers.status import render_status_ui
     await render_status_ui(bot, message.chat.id, message.from_user.id, db)
