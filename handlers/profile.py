@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 from aiogram import Router, F, types, Bot
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -10,6 +9,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InputMediaPhoto
 )
 from services.database import DatabaseService
+from utils.ui_manager import UIManager  # Tambahan krusial untuk pemulihan navigasi
 
 router = Router()
 
@@ -88,7 +88,6 @@ async def render_profile_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseSe
         f"<i>(Foto ini adalah yang terlihat oleh user lain)</i>"
     )
 
-    # ❌ TOMBOL BACK/DASHBOARD DIHAPUS
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 EDIT BIO", callback_data="update_bio"),
          InlineKeyboardButton(text="📍 UPDATE LOKASI", callback_data="update_loc")],
@@ -97,8 +96,15 @@ async def render_profile_ui(bot: Bot, chat_id: int, user_id: int, db: DatabaseSe
     ])
 
     media = InputMediaPhoto(media=user.photo_id, caption=text, parse_mode="HTML")
-    try: await bot.edit_message_media(chat_id=chat_id, message_id=user.anchor_msg_id, media=media, reply_markup=kb)
-    except Exception: pass
+    
+    # FIX: SPA Fallback (Anti-Ghost Edit)
+    try: 
+        await bot.edit_message_media(chat_id=chat_id, message_id=user.anchor_msg_id, media=media, reply_markup=kb)
+    except Exception: 
+        try:
+            sent = await bot.send_photo(chat_id=chat_id, photo=user.photo_id, caption=text, reply_markup=kb, parse_mode="HTML")
+            await db.update_anchor_msg(user_id, sent.message_id)
+        except: pass
     
     if callback_id:
         try: await bot.answer_callback_query(callback_id)
@@ -112,18 +118,22 @@ async def render_manage_photos_ui(bot: Bot, chat_id: int, user_id: int, db: Data
     await db.push_nav(user_id, "manage_photos")
     extra = user.extra_photos or []
     
-    # ❌ TOMBOL KEMBALI DIHAPUS
     kb = [[InlineKeyboardButton(text="🖼️ GANTI FOTO UTAMA", callback_data="change_photo_main")]]
     if len(extra) < 2: kb.append([InlineKeyboardButton(text="➕ TAMBAH FOTO EXTRA", callback_data="add_photo_extra")])
     if extra: kb.append([InlineKeyboardButton(text="🗑️ HAPUS SEMUA FOTO EXTRA", callback_data="clear_photo_extra")])
     
+    caption_text = "📸 <b>MANAJEMEN GALERI FOTO</b>\n\nPilih aksi yang ingin Anda lakukan:\n\n<i>(Gunakan navigasi bawah untuk kembali ke profil)</i>"
+    media = InputMediaPhoto(media=user.photo_id, caption=caption_text, parse_mode="HTML")
+
+    # FIX: SPA Fallback (Anti-Ghost Edit)
     try: 
-        await bot.edit_message_caption(
-            chat_id=chat_id, message_id=user.anchor_msg_id, 
-            caption="📸 <b>MANAJEMEN GALERI FOTO</b>\n\nPilih aksi yang ingin Anda lakukan:\n\n<i>(Gunakan navigasi bawah untuk kembali ke profil)</i>", 
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML"
-        )
-    except: pass
+        await bot.edit_message_media(chat_id=chat_id, message_id=user.anchor_msg_id, media=media, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    except Exception:
+        try:
+            sent = await bot.send_photo(chat_id=chat_id, photo=user.photo_id, caption=caption_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+            await db.update_anchor_msg(user_id, sent.message_id)
+        except: pass
+        
     return True
 
 
@@ -146,16 +156,11 @@ async def ask_location_profile(callback: types.CallbackQuery, state: FSMContext,
             temp_row = []
     if temp_row: kb_list.append(temp_row)
     
-    # ❌ TOMBOL BATAL DIHAPUS
-    text = (
-        "📍 <b>UPDATE LOKASI PROFIL</b>\n\n"
-        "Pilih kota besarmu atau gunakan GPS otomatis agar teman di sekitarmu bisa menemukanmu."
-    )
+    text = "📍 <b>UPDATE LOKASI PROFIL</b>\n\nPilih kota besarmu atau gunakan GPS otomatis agar teman di sekitarmu bisa menemukanmu.\n\n<i>(Gunakan tombol navigasi bawah untuk membatalkan)</i>"
 
     try: await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list), parse_mode="HTML")
     except: pass
 
-    # Jaga-jaga user ingin batal tanpa input lokasi
     gps_kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📍 KIRIM KOORDINAT GPS", request_location=True)], [KeyboardButton(text="⬅️ Kembali")]],
         resize_keyboard=True, one_time_keyboard=True
@@ -184,17 +189,15 @@ async def handle_manual_city_profile(callback: types.CallbackQuery, db: Database
         try: await bot.delete_message(chat_id=callback.message.chat.id, message_id=data.get('gps_msg_id'))
         except: pass
         
-        # FIX: Hapus Keyboard GPS yang nyangkut saat user milih kota via tombol
+        # FIX: Pulihkan Global Nav agar bagian bawah layar tidak kosong melompong
         try:
-            from aiogram.types import ReplyKeyboardRemove
-            temp_msg = await callback.message.answer("🔄", reply_markup=ReplyKeyboardRemove())
+            temp_msg = await callback.message.answer("🔄", reply_markup=UIManager.get_global_nav_keyboard())
             await temp_msg.delete()
         except: pass
         
-        await state.clear() # Selesaikan State
+        await state.clear() 
         
         await callback.answer(f"✅ Lokasi diperbarui ke {city_info['name']}!", show_alert=True)
-        # NATIVE CALL
         await render_profile_ui(bot, callback.message.chat.id, callback.from_user.id, db, state)
 
 @router.message(F.location, EditProfile.waiting_for_location)
@@ -215,12 +218,13 @@ async def handle_gps_profile(message: types.Message, db: DatabaseService, state:
     try: await bot.delete_message(chat_id=message.chat.id, message_id=data.get('gps_msg_id'))
     except: pass
     
-    hapus_kb = await message.answer("✅ Menyimpan lokasi GPS...", reply_markup=ReplyKeyboardRemove())
+    # FIX: Tampilkan pesan sukses dan langsung pulihkan Global Nav
+    hapus_kb = await message.answer("✅ Menyimpan lokasi GPS...", reply_markup=UIManager.get_global_nav_keyboard())
     await asyncio.sleep(1)
     try: await hapus_kb.delete()
     except: pass
     
-    # NATIVE CALL
+    await state.clear()
     await render_profile_ui(bot, message.chat.id, message.from_user.id, db, state)
 
 
@@ -239,7 +243,6 @@ async def ask_interests(callback: types.CallbackQuery, db: DatabaseService, stat
         kb.append([InlineKeyboardButton(text=f"{prefix}{name}", callback_data=f"prof_int_{code}")])
     
     kb.append([InlineKeyboardButton(text="💾 SIMPAN", callback_data="prof_save_int")])
-    # ❌ TOMBOL BATAL DIHAPUS
     
     try:
         await callback.message.edit_caption(
@@ -267,7 +270,8 @@ async def toggle_interest(callback: types.CallbackQuery, state: FSMContext):
         kb.append([InlineKeyboardButton(text=f"{p}{n}", callback_data=f"prof_int_{c}")])
     kb.append([InlineKeyboardButton(text="💾 SIMPAN", callback_data="prof_save_int")])
     
-    await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    try: await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    except: pass
 
 @router.callback_query(F.data == "prof_save_int", EditProfile.waiting_for_interests)
 async def save_interests(callback: types.CallbackQuery, state: FSMContext, db: DatabaseService, bot: Bot):
