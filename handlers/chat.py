@@ -20,13 +20,14 @@ def get_int_id(key: str):
             except: return val
     return val
 
-CHAT_LOG_GROUP_ID = get_int_id("CHAT_LOG_GROUP_ID")
+# Gunakan CHAT_LOG_CHANNEL_ID (Fallback ke variabel lama jika belum diganti)
+CHAT_LOG_CHANNEL_ID = get_int_id("CHAT_LOG_CHANNEL_ID") or get_int_id("CHAT_LOG_GROUP_ID")
 
 class ChatState(StatesGroup):
     in_chat_room = State() 
 
 # ==========================================
-# 1. MASUK KE RUANG OBROLAN (GERBANG UTAMA & LOAD HISTORY)
+# 1. MASUK KE RUANG OBROLAN (LOAD HISTORY)
 # ==========================================
 @router.callback_query(F.data.startswith("chat_"))
 async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: DatabaseService, bot: Bot):
@@ -62,10 +63,7 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
             if not sukses: 
                 return await callback.answer("Gagal memotong kuota.", show_alert=True)
             
-            if origin == "unmask":
-                duration_hrs = 48
-            else:
-                duration_hrs = 48 if user.is_vip_plus else 24
+            duration_hrs = 48 if origin == "unmask" else (48 if user.is_vip_plus else 24)
                 
             new_expiry_ts = int((datetime.datetime.now() + datetime.timedelta(hours=duration_hrs)).timestamp())
             await db.upsert_chat_session(user_id, target_id, new_expiry_ts, origin=origin)
@@ -80,8 +78,6 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
     await state.update_data(chat_target_id=target_id, sweep_list=[])
     await state.set_state(ChatState.in_chat_room)
     
-    # FIX UI: Tidak ada lagi custom reply_markup "TUTUP OBROLAN"
-    # User akan tetap menggunakan Global Navigation!
     banner_text = (
         f"💬 <b>RUANG OBROLAN BERSAMA {target.full_name.upper()}</b>\n"
         f"<code>================================</code>\n"
@@ -99,14 +95,22 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
     sweep = current_data.get('sweep_list', [])
     sweep.append(banner_msg.message_id)
 
+    # LOAD HISTORY DARI KOMENTAR CHANNEL
     if session_data and getattr(session_data, 'channel_msg_ids', []):
-        msg_list = session_data.channel_msg_ids
-        if len(msg_list) > 1:
-            recent_msgs = msg_list[1:][-20:] 
+        raw_ids = session_data.channel_msg_ids
+        msg_ids = [int(m) for m in raw_ids if str(m).isdigit()]
+        
+        if len(msg_ids) > 1:
+            # Pastikan murni mengambil pesan komentar, abaikan postingan utama Channel (ID terkecil)
+            thread_header_id = min(msg_ids) 
+            recent_msgs = [m for m in msg_ids if m != thread_header_id][-20:] 
+            recent_msgs.sort()
+            
             for msg_id in recent_msgs:
-                if CHAT_LOG_GROUP_ID:
+                if CHAT_LOG_CHANNEL_ID:
                     try:
-                        copied = await bot.copy_message(chat_id=user_id, from_chat_id=CHAT_LOG_GROUP_ID, message_id=msg_id)
+                        # Copy pesan (komentar) ke layar user
+                        copied = await bot.copy_message(chat_id=user_id, from_chat_id=CHAT_LOG_CHANNEL_ID, message_id=msg_id)
                         sweep.append(copied.message_id)
                     except Exception: pass
                     
@@ -114,7 +118,7 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
     await callback.answer()
 
 # ==========================================
-# 2. MESIN RUANG OBROLAN (REAL-TIME CHAT & AUTO-SWEEP)
+# 2. MESIN RUANG OBROLAN (REAL-TIME CHAT)
 # ==========================================
 @router.message(ChatState.in_chat_room)
 async def process_chat_room_message(message: types.Message, state: FSMContext, db: DatabaseService, bot: Bot):
@@ -122,14 +126,11 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
     data = await state.get_data()
     sweep_list = data.get('sweep_list', [])
 
-    # FIX UI: Logika Keluar Ruangan Menangkap Global Nav & Menu Biru
     nav_commands = ["⬅️ Kembali", "🏠 Dashboard", "📱 DASHBOARD UTAMA", "❌ TUTUP OBROLAN"]
     is_command = message.text and message.text.startswith("/")
     
     if message.text in nav_commands or is_command:
         await state.clear()
-        
-        # Sapu bersih chat bubble & input user
         try: await message.delete()
         except Exception: pass
         for msg_id in sweep_list:
@@ -137,7 +138,6 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
             except Exception: pass
             
         txt = message.text
-        # Redirect ke rute yang benar
         if txt == "⬅️ Kembali":
             from handlers.start import handle_back_button
             return await handle_back_button(message, db, bot, state)
@@ -186,31 +186,40 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
         await state.update_data(sweep_list=sweep_list)
         return
 
+    # LOGIKA INTI: PEMBUATAN THREAD DI CHANNEL & KIRIM KE KOLOM KOMENTAR
     saved_msg_id = None
-    if CHAT_LOG_GROUP_ID:
+    if CHAT_LOG_CHANNEL_ID:
         try:
             thread_id = None
             if session_data.channel_msg_ids:
-                thread_id = session_data.channel_msg_ids[0]
-            else:
+                msg_ids = [int(m) for m in session_data.channel_msg_ids if str(m).isdigit()]
+                if msg_ids:
+                    thread_id = min(msg_ids) # Ambil ID Header Utama
+            
+            # Jika belum ada Thread sama sekali di Channel, Buat Postingannya (Header)
+            if not thread_id:
                 header_text = f"🗄 <b>ROOM [{session_data.origin.upper()}]</b>\nUser 1: <code>{user_id}</code>\nUser 2: <code>{target_id}</code>"
-                header_msg = await bot.send_message(CHAT_LOG_GROUP_ID, header_text, parse_mode="HTML")
+                header_msg = await bot.send_message(CHAT_LOG_CHANNEL_ID, header_text, parse_mode="HTML")
                 thread_id = header_msg.message_id
                 
+                # Simpan ID Postingan Utama ini ke database sebagai Thread ID
                 await db.upsert_chat_session(user_id, target_id, session_data.expires_at, new_channel_msg_id=thread_id)
                 session_data = await db.get_active_chat_session(user_id, target_id) 
 
+            # Kirim Chat User SEBAGAI KOMENTAR (reply) ke Postingan Channel Tersebut
             clean_bubble = f"👤 <b>{sender.full_name.upper()}:</b>\n{html.escape(message.text)}"
-            saved_log = await bot.send_message(CHAT_LOG_GROUP_ID, clean_bubble, reply_to_message_id=thread_id, parse_mode="HTML")
+            saved_log = await bot.send_message(CHAT_LOG_CHANNEL_ID, clean_bubble, reply_to_message_id=thread_id, parse_mode="HTML")
             saved_msg_id = saved_log.message_id
         except Exception as e:
-            logging.error(f"Gagal Simpan History ke Grup: {e}")
+            logging.error(f"Gagal Simpan History ke Channel: {e}")
 
+    # Simpan ID pesan komentar ini ke dalam array database
     if saved_msg_id:
         await db.upsert_chat_session(user_id, target_id, session_data.expires_at, last_message=message.text, new_channel_msg_id=saved_msg_id)
     else:
         await db.upsert_chat_session(user_id, target_id, session_data.expires_at, last_message=message.text)
 
+    # ------------------ (Bawah ini sisa logika Poin dan Kirim Notif ke Target - Tetap Sama) ------------------
     target_session = await db.get_active_chat_session(target_id, user_id)
     origin_type = target_session.origin if target_session else session_data.origin
     
