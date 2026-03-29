@@ -103,14 +103,12 @@ async def command_start_handler(message: types.Message, command: CommandObject =
     except: pass
 
     from handlers.registration import check_membership, CHANNEL_LINK, GROUP_LINK
-    
     is_joined = await check_membership(bot, user_id)
     if not is_joined:
         text_stop = "<b>STOP! Join Dulu ya Guys!!!</b> ✋\n\nUntuk menjaga kualitas komunitas, kamu wajib bergabung di Channel dan Grup kami sebelum bisa beraksi.\n\n<i>Silakan bergabung kembali melalui tombol di bawah:</i>"
         return await message.answer_photo(photo=BANNER_PHOTO_ID, caption=text_stop, reply_markup=UIManager.get_join_gate_kb(CHANNEL_LINK, GROUP_LINK), parse_mode="HTML")
 
     user = await db.get_user(user_id)
-    
     if not user:
         if state: await state.clear()
         from handlers.registration import RegState
@@ -161,75 +159,80 @@ async def handle_back_button(message: types.Message, db: DatabaseService, bot: B
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Deteksi apakah user butuh pemulihan keyboard (misal habis dari GPS)
-    current_state = await state.get_state() if state else None
-    
-    # FIX: Jaring Pengaman: Menghapus Pesan Instruksi GPS yang nyangkut (Perbaikan Total)
-    try:
-        if current_state and "waiting_location" in current_state.lower():
+    # 1. PENYAPU SUPER AGRESIF (Tanpa cek nama state)
+    if state:
+        try:
             data = await state.get_data()
             gps_msg_id = data.get('gps_msg_id')
             if gps_msg_id:
                 try: await bot.delete_message(chat_id=chat_id, message_id=gps_msg_id)
                 except: pass
-    except: pass
-
-    if state: await state.clear()
+        except: pass
+        await state.clear()
     
-    # 1. Hapus teks "⬅️ Kembali"
+    # Hapus teks "⬅️ Kembali"
     try: await message.delete()
     except: pass
     
-    # 2. Ambil halaman sebelumnya dari stack di DB
-    previous_menu = await db.pop_nav(user_id)
+    # Pulihkan keyboard bawah secara instan
+    try:
+        from utils.ui_manager import UIManager
+        global_nav = UIManager.get_global_nav_keyboard()
+        temp_msg = await bot.send_message(chat_id, "🔄", reply_markup=global_nav)
+        await bot.delete_message(chat_id, temp_msg.message_id)
+    except: pass
     
-    # 3. Routing bersih tanpa simulasi callback
-    # FIX ANTI SAMPAH: Hapus pengiriman pesan dummy "🟢 Navigasi dipulihkan."
+    # 2. FIX NAVIGASI: BACA POSISI SAAT INI (TIDAK DI-POP/BUANG)
+    user = await db.get_user(user_id)
+    target_menu = "dashboard"
+    if user and user.nav_stack and len(user.nav_stack) > 0:
+        target_menu = user.nav_stack[-1] # Baca ujung tumpukan
     
-    if previous_menu == "dashboard": await render_dashboard_ui(bot, chat_id, user_id, db, state)
-    elif previous_menu == "feed":
+    # 3. ROUTING
+    if target_menu == "dashboard": await render_dashboard_ui(bot, chat_id, user_id, db, state)
+    elif target_menu == "feed":
         from handlers.feed import render_feed_ui
         await render_feed_ui(bot, chat_id, user_id, db, state)
-    elif previous_menu == "boost":
+    elif target_menu == "boost":
         from handlers.boost import render_boost_ui
         await render_boost_ui(bot, chat_id, user_id, db)    
-    elif previous_menu == "discovery":
+    elif target_menu == "discovery":
         from handlers.discovery import render_discovery_ui
         await render_discovery_ui(bot, chat_id, user_id, db, state)
-    elif previous_menu == "match":
+    elif target_menu == "match":
         from handlers.match import render_match_ui
         await render_match_ui(bot, chat_id, user_id, db)
-    elif previous_menu == "who_like_me":
+    elif target_menu == "who_like_me":
         from handlers.who_like_me import render_who_like_me_ui
         await render_who_like_me_ui(bot, chat_id, user_id, db)
-    elif previous_menu == "notifications":
+    elif target_menu == "notifications":
         from handlers.notification import render_notification_menu_ui
         await render_notification_menu_ui(bot, chat_id, user_id, db)
-    elif previous_menu and previous_menu.startswith("notif_list_"):
+    elif target_menu and target_menu.startswith("notif_list_"):
         from handlers.notification import view_unified_list
         from collections import namedtuple
         CallbackMock = namedtuple('CallbackQuery', ['data', 'from_user', 'message', 'answer'])
-        mock = CallbackMock(data=previous_menu, from_user=message.from_user, message=types.Message(message_id=(await db.get_user(user_id)).anchor_msg_id, date=message.date, chat=message.chat), answer=lambda *a,**kw: asyncio.sleep(0))
+        mock = CallbackMock(data=target_menu, from_user=message.from_user, message=types.Message(message_id=user.anchor_msg_id, date=message.date, chat=message.chat), answer=lambda *a,**kw: asyncio.sleep(0))
         await view_unified_list(mock, db, bot)
-    elif previous_menu == "inbox":
+    elif target_menu == "inbox":
         from handlers.inbox import render_inbox_ui
         await render_inbox_ui(bot, chat_id, user_id, db)
-    elif previous_menu == "status":
+    elif target_menu == "status":
         from handlers.status import render_status_ui
         await render_status_ui(bot, chat_id, user_id, db)
-    elif previous_menu == "profile":
+    elif target_menu == "profile":
         from handlers.profile import render_profile_ui
         await render_profile_ui(bot, chat_id, user_id, db, state)
-    elif previous_menu == "manage_photos":
+    elif target_menu == "manage_photos":
         from handlers.profile import render_manage_photos_ui
         await render_manage_photos_ui(bot, chat_id, user_id, db)
-    elif previous_menu == "referral":
+    elif target_menu == "referral":
         from handlers.referrals import render_referral_ui
         await render_referral_ui(bot, chat_id, user_id, db)
-    elif previous_menu in ["pricing", "pricing_trial"]:
+    elif target_menu in ["pricing", "pricing_trial"]:
         from handlers.pricing import render_pricing_ui
         await render_pricing_ui(bot, chat_id, user_id, db)
-    elif previous_menu == "withdraw":
+    elif target_menu == "withdraw":
         from handlers.withdraw import render_withdraw_ui
         await render_withdraw_ui(bot, chat_id, user_id, db, state)
     else:
