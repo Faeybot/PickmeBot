@@ -5,7 +5,6 @@ import logging
 from aiogram import Router, F, types, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 from services.database import DatabaseService
 from services.notification import NotificationService 
@@ -41,14 +40,12 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
     if not target: 
         return await callback.answer("❌ Profil tidak ditemukan.", show_alert=True)
 
-    # 1. Cek Database Sesi
     session_data = await db.get_active_chat_session(user_id, target_id)
     now_ts = int(datetime.datetime.now().timestamp())
     
     is_active = session_data and session_data.expires_at > now_ts
     should_deduct = False
     
-    # 2. Logika Gerbang Kuota
     if not is_active:
         if origin in ["public", "extend", "feed", "discovery"]:
             if not (user.is_vip or user.is_vip_plus):
@@ -65,7 +62,6 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
             if not sukses: 
                 return await callback.answer("Gagal memotong kuota.", show_alert=True)
             
-            # PENENTUAN DURASI BERDASARKAN ASAL
             if origin == "unmask":
                 duration_hrs = 48
             else:
@@ -78,39 +74,35 @@ async def enter_chat_room(callback: types.CallbackQuery, state: FSMContext, db: 
         if origin not in ["inbox", "extend"]:
             await db.upsert_chat_session(user_id, target_id, session_data.expires_at, origin=origin)
 
-    # 3. Hilangkan counter Notifikasi
     await getattr(db, 'mark_notif_read', lambda u, s, t: None)(user_id, target_id, "CHAT")
     await db.push_nav(user_id, f"chat_room_{target_id}")
 
-    # 4. Inisialisasi State FSM 
     await state.update_data(chat_target_id=target_id, sweep_list=[])
     await state.set_state(ChatState.in_chat_room)
     
-    # 5. Kirim Banner Ruang Obrolan
-    reply_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ TUTUP OBROLAN")]], resize_keyboard=True)
+    # FIX UI: Tidak ada lagi custom reply_markup "TUTUP OBROLAN"
+    # User akan tetap menggunakan Global Navigation!
     banner_text = (
         f"💬 <b>RUANG OBROLAN BERSAMA {target.full_name.upper()}</b>\n"
         f"<code>================================</code>\n"
         f"<i>Pintu terbuka. Semua yang kamu ketik akan langsung terkirim.</i>\n"
-        f"<i>Riwayat akan dibersihkan dari layar saat kamu keluar, namun aman di Inbox.</i>\n\n"
+        f"<i>Gunakan tombol Navigasi di bawah atau Menu Biru untuk keluar.</i>\n\n"
         f"⬇️ <b>Ketik pesanmu sekarang:</b>"
     )
     
     try: await callback.message.delete()
     except Exception: pass
     
-    banner_msg = await callback.message.answer(banner_text, reply_markup=reply_kb, parse_mode="HTML")
+    banner_msg = await callback.message.answer(banner_text, parse_mode="HTML")
     
     current_data = await state.get_data()
     sweep = current_data.get('sweep_list', [])
     sweep.append(banner_msg.message_id)
 
-    # FIX: 6. LOAD HISTORY (Melompati Header Thread)
     if session_data and getattr(session_data, 'channel_msg_ids', []):
         msg_list = session_data.channel_msg_ids
-        # Hanya load jika ada komentar (index > 0)
         if len(msg_list) > 1:
-            recent_msgs = msg_list[1:][-20:] # Abaikan index 0 (Header), ambil 20 chat terakhir
+            recent_msgs = msg_list[1:][-20:] 
             for msg_id in recent_msgs:
                 if CHAT_LOG_GROUP_ID:
                     try:
@@ -130,21 +122,43 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
     data = await state.get_data()
     sweep_list = data.get('sweep_list', [])
 
-    if message.text == "❌ TUTUP OBROLAN" or message.text == "/exit":
+    # FIX UI: Logika Keluar Ruangan Menangkap Global Nav & Menu Biru
+    nav_commands = ["⬅️ Kembali", "🏠 Dashboard", "📱 DASHBOARD UTAMA", "❌ TUTUP OBROLAN"]
+    is_command = message.text and message.text.startswith("/")
+    
+    if message.text in nav_commands or is_command:
         await state.clear()
+        
+        # Sapu bersih chat bubble & input user
         try: await message.delete()
         except Exception: pass
         for msg_id in sweep_list:
             try: await bot.delete_message(chat_id=user_id, message_id=msg_id)
             except Exception: pass
             
-        from utils.ui_manager import UIManager
-        global_nav = UIManager.get_global_nav_keyboard()
-        await message.answer("🚪 <i>Keluar dari ruang obrolan...</i>", reply_markup=global_nav, parse_mode="HTML")
-        
-        from handlers.inbox import render_inbox_ui
-        await render_inbox_ui(bot, message.chat.id, user_id, db)
-        return
+        txt = message.text
+        # Redirect ke rute yang benar
+        if txt == "⬅️ Kembali":
+            from handlers.start import handle_back_button
+            return await handle_back_button(message, db, bot, state)
+        elif txt in ["🏠 Dashboard", "📱 DASHBOARD UTAMA"] or txt == "/dashboard" or txt.startswith("/start"):
+            from handlers.start import render_dashboard_ui
+            return await render_dashboard_ui(bot, message.chat.id, user_id, db, state, force_new=True)
+        elif txt == "/feed":
+            from handlers.feed import render_feed_ui
+            return await render_feed_ui(bot, message.chat.id, user_id, db, state)
+        elif txt == "/discovery":
+            from handlers.discovery import render_discovery_ui
+            return await render_discovery_ui(bot, message.chat.id, user_id, db, state)
+        elif txt == "/inbox" or txt == "/exit":
+            from handlers.inbox import render_inbox_ui
+            return await render_inbox_ui(bot, message.chat.id, user_id, db)
+        elif txt == "/status":
+            from handlers.status import render_status_ui
+            return await render_status_ui(bot, message.chat.id, user_id, db)
+        else:
+            from handlers.start import render_dashboard_ui
+            return await render_dashboard_ui(bot, message.chat.id, user_id, db, state, force_new=True)
 
     if not message.text:
         msg = await message.answer("⚠️ Maaf, sistem ini hanya mendukung pesan teks.")
@@ -172,7 +186,6 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
         await state.update_data(sweep_list=sweep_list)
         return
 
-    # FIX: 4. LOGGING KE GRUP (SEBAGAI THREAD / KOMENTAR)
     saved_msg_id = None
     if CHAT_LOG_GROUP_ID:
         try:
@@ -180,29 +193,24 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
             if session_data.channel_msg_ids:
                 thread_id = session_data.channel_msg_ids[0]
             else:
-                # Buat Pesan Header Baru jika belum ada
                 header_text = f"🗄 <b>ROOM [{session_data.origin.upper()}]</b>\nUser 1: <code>{user_id}</code>\nUser 2: <code>{target_id}</code>"
                 header_msg = await bot.send_message(CHAT_LOG_GROUP_ID, header_text, parse_mode="HTML")
                 thread_id = header_msg.message_id
                 
-                # Simpan ID Header ke database
                 await db.upsert_chat_session(user_id, target_id, session_data.expires_at, new_channel_msg_id=thread_id)
                 session_data = await db.get_active_chat_session(user_id, target_id) 
 
-            # Bentuk Chat Bubble Bersih untuk direply ke Header
             clean_bubble = f"👤 <b>{sender.full_name.upper()}:</b>\n{html.escape(message.text)}"
             saved_log = await bot.send_message(CHAT_LOG_GROUP_ID, clean_bubble, reply_to_message_id=thread_id, parse_mode="HTML")
             saved_msg_id = saved_log.message_id
         except Exception as e:
             logging.error(f"Gagal Simpan History ke Grup: {e}")
 
-    # 5. UPDATE DATABASE SQL
     if saved_msg_id:
         await db.upsert_chat_session(user_id, target_id, session_data.expires_at, last_message=message.text, new_channel_msg_id=saved_msg_id)
     else:
         await db.upsert_chat_session(user_id, target_id, session_data.expires_at, last_message=message.text)
 
-    # 6. DISTRIBUSI POIN & NOTIF
     target_session = await db.get_active_chat_session(target_id, user_id)
     origin_type = target_session.origin if target_session else session_data.origin
     
@@ -222,7 +230,6 @@ async def process_chat_room_message(message: types.Message, state: FSMContext, d
             sweep_list.append(bonus_msg.message_id)
             await state.update_data(sweep_list=sweep_list)
 
-    # 7. KIRIM PESAN KE TARGET
     target_user = await db.get_user(target_id)
     kasta = "💎 VIP+" if sender.is_vip_plus else "🌟 VIP" if sender.is_vip else "👤 FREE"
     
